@@ -1,0 +1,200 @@
+{
+  "name": "dsh-vscode",
+  "displayName": "DSH for VS Code",
+  "description": "Use DeepSeek Harness (DSH) inside VS Code: the full DSH web GUI embedded in the sidebar, with server lifecycle management (auto-start, start/stop/restart, status bar).",
+  "version": "0.1.3",
+  "publisher": "dsh-vscode",
+  "license": "MIT",
+  "icon": "media/icon.png",
+  "galleryBanner": {
+    "color": "#1d2354",
+    "theme": "dark"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/k2124732496-lab/DSH-for-Vscode.git"
+  },
+  "homepage": "https://github.com/k2124732496-lab/DSH-for-Vscode",
+  "bugs": {
+    "url": "https://github.com/k2124732496-lab/DSH-for-Vscode/issues"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "categories": [
+    "AI",
+    "Other"
+  ],
+  "keywords": [
+    "dsh",
+    "deepseek",
+    "harness",
+    "ai",
+    "agent",
+    "coding-agent"
+  ],
+  "main": "./dist/extension.js",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "dsh",
+          "title": "DSH",
+          "icon": "media/dsh.svg"
+        }
+      ]
+    },
+    "views": {
+      "dsh": [
+        {
+          "type": "webview",
+          "id": "dsh.sidebarView",
+          "name": "DSH"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "dsh.openPanel",
+        "title": "DSH: Open Panel",
+        "icon": "$(comment-discussion)"
+      },
+      {
+        "command": "dsh.startServer",
+        "title": "DSH: Start Server",
+        "icon": "$(play)"
+      },
+      {
+        "command": "dsh.stopServer",
+        "title": "DSH: Stop Server",
+        "icon": "$(debug-stop)"
+      },
+      {
+        "command": "dsh.restartServer",
+        "title": "DSH: Restart Server",
+        "icon": "$(debug-restart)"
+      },
+      {
+        "command": "dsh.openInBrowser",
+        "title": "DSH: Open in Browser",
+        "icon": "$(globe)"
+      },
+      {
+        "command": "dsh.showLogs",
+        "title": "DSH: Show Logs",
+        "icon": "$(output)"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "dsh.startServer",
+          "when": "view == dsh.sidebarView && !dsh.running",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dsh.restartServer",
+          "when": "view == dsh.sidebarView && dsh.running",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dsh.stopServer",
+          "when": "view == dsh.sidebarView && dsh.running",
+          "group": "navigation@2"
+        },
+        {
+          "command": "dsh.openInBrowser",
+          "when": "view == dsh.sidebarView && dsh.running",
+          "group": "navigation@3"
+        },
+        {
+          "command": "dsh.showLogs",
+          "when": "view == dsh.sidebarView",
+          "group": "navigation@9"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "DSH",
+      "properties": {
+        "dsh.executablePath": {
+          "type": "string",
+          "default": "",
+          "markdownDescription": "Path to the `dsh` executable (or to `@deepseek-ai/dsh/lib/bin.js`, which is run with `node`). Empty means auto-detect: the global npm install, then `dsh` on PATH."
+        },
+        "dsh.autoStart": {
+          "type": "boolean",
+          "default": true,
+          "description": "Start the DSH web server automatically when a workspace folder is open."
+        },
+        "dsh.port": {
+          "type": "number",
+          "default": 0,
+          "minimum": 0,
+          "maximum": 65535,
+          "description": "Port for the DSH web server. 0 lets the OS pick a free port. A fixed port lets the extension reuse an already-running DSH instance on it."
+        },
+        "dsh.host": {
+          "type": "string",
+          "default": "127.0.0.1",
+          "description": "Bind host for the DSH web server. Keep 127.0.0.1 for local-only access."
+        },
+        "dsh.extraArgs": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "default": [],
+          "description": "Extra arguments forwarded to the DSH web app (e.g. --trusted-host)."
+        },
+        "dsh.extraEnv": {
+          "type": "object",
+          "default": {},
+          "description": "Extra environment variables for the DSH process. VS Code host variables (NODE_OPTIONS, VSCODE_*, ELECTRON_*) are always scrubbed; set them here deliberately if needed."
+        },
+        "dsh.dshHome": {
+          "type": "string",
+          "default": "",
+          "description": "Custom DSH_HOME (profile/session/settings directory). Empty inherits the default (~/.dsh)."
+        },
+        "dsh.startupTimeoutSeconds": {
+          "type": "number",
+          "default": 30,
+          "minimum": 5,
+          "maximum": 300,
+          "description": "How long to wait for the web server to become reachable before reporting a failure."
+        },
+        "dsh.stopOnDeactivate": {
+          "type": "boolean",
+          "default": true,
+          "description": "Stop the DSH server started by this extension when the extension deactivates (VS Code exit/reload)."
+        },
+        "dsh.autoRestart": {
+          "type": "boolean",
+          "default": false,
+          "description": "Automatically restart the server after an unexpected crash."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "watch": "node esbuild.mjs --watch",
+    "pretest": "node esbuild.mjs --test",
+    "test": "node --test dist-test/",
+    "smoke": "node esbuild.mjs --smoke && node dist-smoke/smoke.js",
+    "vscode:prepublish": "node esbuild.mjs",
+    "package": "node esbuild.mjs && vsce package"
+  },
+  "devDependencies": {
+    "@types/node": "^22.10.0",
+    "@types/vscode": "^1.90.0",
+    "@vscode/vsce": "^3.2.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.0"
+  }
+}
+

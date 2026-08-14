@@ -1,0 +1,17 @@
+.vscode/**
+.git/**
+.gitignore
+.npm-cache/**
+node_modules/**
+dist-test/**
+dist-smoke/**
+scripts/**
+src/**
+esbuild.mjs
+tsconfig.json
+.smoke-out.log
+.smoke-dsh/**
+vsce-out.txt
+*.log
+*.vsix
+**/*.map

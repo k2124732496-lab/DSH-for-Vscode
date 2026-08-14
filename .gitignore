@@ -1,0 +1,10 @@
+node_modules/
+.npm-cache/
+dist/
+dist-test/
+dist-smoke/
+*.vsix
+*.log
+.DS_Store
+.smoke-out.log
+.smoke-dsh/
