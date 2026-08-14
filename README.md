@@ -1,4 +1,4 @@
-# DSH for VS Code
+# DSH for VS Code（Welcome everyone to develop together）
 
 Use [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH) inside
 VS Code the way Codex / Claude Code extensions work: the extension manages a
