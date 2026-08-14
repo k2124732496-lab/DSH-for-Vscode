@@ -1,5 +1,5 @@
 {
-  "name": "dsh-vscode",
+  "name": "dsh-for-vscode",
   "displayName": "DSH for VS Code",
   "description": "Use DeepSeek Harness (DSH) inside VS Code: the full DSH web GUI embedded in the sidebar, with server lifecycle management (auto-start, start/stop/restart, status bar).",
   "version": "0.1.3",
