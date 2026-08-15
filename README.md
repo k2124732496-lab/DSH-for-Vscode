@@ -14,16 +14,14 @@ preview/SCM panels, …) — is available right inside the editor.
   commands, status-bar indicator with the live port.
 - **Workspace-aware**: DSH launches with your first workspace folder as the
   session working directory; switching workspaces restarts it in the new folder.
-- **Fixed-port reuse**: with `dsh.port` set (non-zero), the extension attaches
-  to an already-running DSH instance instead of spawning a second one.
+- **Verified fixed-port reuse**: with `dsh.port` set (non-zero), the extension attaches only after the existing endpoint identifies itself as DSH.
 - **Open in Browser**, output-channel logging, and a start/error screen with
   actionable hints when `dsh` is missing.
-- Everything runs on loopback only; the extension never touches your
-  `~/.dsh` profile files.
+- DSH binds to loopback only. When `dsh.dshHome` is empty, the DSH process uses its normal profile directory (typically `~/.dsh`).
 
 ## Requirements
 
-- VS Code `>= 1.90` (desktop).
+- VS Code `>= 1.90` (desktop) with a trusted local workspace folder.
 - Node.js `>= 18` on PATH.
 - A `dsh` installation, either:
   - global npm install: `npm install -g @deepseek-ai/dsh` (auto-detected), or
@@ -34,7 +32,7 @@ preview/SCM panels, …) — is available right inside the editor.
 
 ### From the packaged .vsix
 
-1. Run `npm run package` (produces `dsh-vscode-<version>.vsix`), then in
+1. Run `npm run package` (produces `dsh-for-vscode-<version>.vsix`), then in
    VS Code: **Extensions → … → Install from VSIX…** and pick the file.
 2. Open a workspace folder; DSH auto-starts in the sidebar (activity-bar icon).
 
@@ -53,8 +51,8 @@ preview/SCM panels, …) — is available right inside the editor.
 | `dsh.executablePath` | `""` | Explicit `dsh` path (bin.js / `.cmd` / executable). Empty = auto-detect. |
 | `dsh.autoStart` | `true` | Start the server automatically when a workspace is open. |
 | `dsh.port` | `0` | Web-server port; `0` = OS-assigned. Non-zero ports are probed for an existing instance first. |
-| `dsh.host` | `127.0.0.1` | Bind host. Keep loopback. |
-| `dsh.extraArgs` | `[]` | Extra args forwarded to the web app (e.g. `--trusted-host`). |
+| `dsh.host` | `127.0.0.1` | Loopback only: `127.0.0.1` or `localhost`. |
+| `dsh.extraArgs` | `[]` | Machine-level extra args; cannot override profile, host, or port. |
 | `dsh.extraEnv` | `{}` | Extra environment variables for the DSH process. Host-only variables (`NODE_OPTIONS`, `VSCODE_*`, `ELECTRON_*`) are always scrubbed — set them here deliberately if needed. |
 | `dsh.dshHome` | `""` | Custom `DSH_HOME`. Empty inherits the default (`~/.dsh`). |
 | `dsh.startupTimeoutSeconds` | `30` | Readiness timeout after spawn. |
@@ -88,7 +86,7 @@ preview/SCM panels, …) — is available right inside the editor.
 - **"Could not find the dsh executable"** — run
   `npm install -g @deepseek-ai/dsh`, or set `dsh.executablePath`.
 - **Port in use / won't start** — keep `dsh.port` at `0`, or make sure the
-  fixed port really serves DSH (the extension attaches when it does).
+  fixed port really serves DSH (the extension attaches only after it verifies the endpoint is DSH).
 - **Blank panel** — check the DSH output channel (`DSH: Show Logs`) and the
   status-bar tooltip; restart with `DSH: Restart Server`.
 - **Sessions in the wrong folder** — DSH uses the first workspace folder as

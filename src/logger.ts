@@ -17,3 +17,8 @@ export function log(message: string): void {
 export function showLogs(): void {
   getChannel().show(true);
 }
+
+export function disposeLogs(): void {
+  channel?.dispose();
+  channel = undefined;
+}

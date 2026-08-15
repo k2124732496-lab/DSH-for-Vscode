@@ -1,42 +1,45 @@
+/** Activates DSH commands, sidebar state, settings refresh, and process teardown. */
 import * as vscode from "vscode";
 import { readSettings, workspaceCwd } from "./config";
 import { discoverDsh, realDiscoveryEnv } from "./discovery";
-import { log, showLogs } from "./logger";
+import { disposeLogs, log, showLogs } from "./logger";
 import { DshServer } from "./server";
 import { SidebarProvider } from "./sidebar";
 import { StatusBar } from "./status";
 
+let activeServer: DshServer | undefined;
+
+function canStartDsh(showMessage: boolean): boolean {
+  if (!vscode.workspace.isTrusted) {
+    if (showMessage) void vscode.window.showWarningMessage("Trust this workspace before starting DSH.");
+    return false;
+  }
+  if (workspaceCwd() === undefined) {
+    if (showMessage) void vscode.window.showWarningMessage("Open a local workspace folder before starting DSH.");
+    return false;
+  }
+  return true;
+}
+
 export function activate(context: vscode.ExtensionContext): void {
   log("DSH for VS Code activating");
-
   const server = new DshServer({
     resolveLocation: async () => discoverDsh(readSettings().executablePath, realDiscoveryEnv()),
-    settings: () => readSettings(),
+    settings: readSettings,
     cwd: workspaceCwd,
     log,
   });
-
+  activeServer = server;
   const statusBar = new StatusBar();
   let sidebar: SidebarProvider | undefined;
 
-  const pushContext = (running: boolean): void => {
-    void vscode.commands.executeCommand("setContext", "dsh.running", running);
-  };
-
+  const start = async (): Promise<void> => { if (canStartDsh(true)) await server.start(); };
   const handleWebviewCommand = (message: { type: string }): void => {
     switch (message.type) {
-      case "start":
-        void server.start();
-        break;
-      case "stop":
-        void server.stop();
-        break;
-      case "restart":
-        void server.restart();
-        break;
-      case "refresh":
-        void server.restart();
-        break;
+      case "start": void start(); break;
+      case "stop": void server.stop(); break;
+      case "restart": if (canStartDsh(true)) void server.restart(); break;
+      case "refresh": if (canStartDsh(true)) void server.restart(); break;
       case "openExternal": {
         const url = server.getSnapshot().url;
         if (url !== undefined) void vscode.env.openExternal(vscode.Uri.parse(url));
@@ -45,78 +48,54 @@ export function activate(context: vscode.ExtensionContext): void {
     }
   };
 
-  server.onChange((snapshot) => {
+  const unsubscribe = server.onChange((snapshot) => {
     statusBar.update(snapshot);
-    pushContext(snapshot.state === "running");
-    sidebar?.push(snapshot);
+    void vscode.commands.executeCommand("setContext", "dsh.running", snapshot.state === "running");
+    void sidebar?.push(snapshot);
   });
-
-  sidebar = new SidebarProvider(server, handleWebviewCommand);
-  context.subscriptions.push(
-    vscode.window.registerWebviewViewProvider("dsh.sidebarView", sidebar, {
-      webviewOptions: { retainContextWhenHidden: true },
-    }),
-  );
+  sidebar = new SidebarProvider(handleWebviewCommand, async (url) => (await vscode.env.asExternalUri(vscode.Uri.parse(url))).toString(true));
 
   context.subscriptions.push(
-    vscode.commands.registerCommand("dsh.openPanel", async () => {
-      const snapshot = server.getSnapshot();
-      if (snapshot.state === "stopped" || snapshot.state === "crashed") {
-        await server.start();
-      }
-      await vscode.commands.executeCommand("dsh.sidebarView.focus");
-    }),
-    vscode.commands.registerCommand("dsh.startServer", async () => {
-      await server.start();
-    }),
-    vscode.commands.registerCommand("dsh.stopServer", async () => {
-      await server.stop();
-    }),
-    vscode.commands.registerCommand("dsh.restartServer", async () => {
-      await server.restart();
-    }),
+    statusBar,
+    { dispose: unsubscribe },
+    { dispose: disposeLogs },
+    vscode.window.registerWebviewViewProvider("dsh.sidebarView", sidebar, { webviewOptions: { retainContextWhenHidden: true } }),
+    vscode.commands.registerCommand("dsh.openPanel", async () => { await start(); await vscode.commands.executeCommand("dsh.sidebarView.focus"); }),
+    vscode.commands.registerCommand("dsh.startServer", start),
+    vscode.commands.registerCommand("dsh.stopServer", () => server.stop()),
+    vscode.commands.registerCommand("dsh.restartServer", async () => { if (canStartDsh(true)) await server.restart(); }),
     vscode.commands.registerCommand("dsh.openInBrowser", async () => {
       const url = server.getSnapshot().url;
-      if (url === undefined) {
-        void vscode.window.showWarningMessage("DSH is not running yet.");
-        return;
-      }
+      if (url === undefined) { await vscode.window.showWarningMessage("DSH is not running yet."); return; }
       await vscode.env.openExternal(vscode.Uri.parse(url));
     }),
-    vscode.commands.registerCommand("dsh.showLogs", () => {
-      showLogs();
-    }),
-  );
-
-  // Keep the session directory in sync with the first workspace folder.
-  context.subscriptions.push(
+    vscode.commands.registerCommand("dsh.showLogs", showLogs),
     vscode.workspace.onDidChangeWorkspaceFolders(() => {
-      const snapshot = server.getSnapshot();
-      if (snapshot.state === "running" && snapshot.owned) {
-        log("workspace folders changed — restarting DSH with the new workspace directory");
+      if (server.getSnapshot().state === "running" && server.getSnapshot().owned && canStartDsh(false)) void server.restart();
+    }),
+    vscode.workspace.onDidChangeConfiguration((event) => {
+      if (!event.affectsConfiguration("dsh")) return;
+      const state = server.getSnapshot().state;
+      if ((state === "running" || state === "starting") && canStartDsh(false)) {
+        log("DSH settings changed - restarting the managed process");
         void server.restart();
       }
     }),
   );
 
-  // Stop the process we spawned when the extension host goes down.
-  context.subscriptions.push({
-    dispose: () => {
-      if (readSettings().stopOnDeactivate && server.getSnapshot().owned) {
-        void server.stop();
-      }
-    },
-  });
-
-  const settings = readSettings();
-  if (settings.autoStart) {
-    log(`auto-start enabled (cwd: ${workspaceCwd()})`);
-    void server.start();
-  } else {
-    log("auto-start disabled by dsh.autoStart — start manually from the DSH panel");
+  try {
+    if (readSettings().autoStart && canStartDsh(false)) void server.start();
+  } catch (error) {
+    void vscode.window.showErrorMessage(error instanceof Error ? error.message : String(error));
   }
 }
 
-export function deactivate(): void {
+export async function deactivate(): Promise<void> {
   log("DSH for VS Code deactivating");
+  const server = activeServer;
+  activeServer = undefined;
+  if (server === undefined) return;
+  let stopOnDeactivate = true;
+  try { stopOnDeactivate = readSettings().stopOnDeactivate; } catch {}
+  await server.dispose(stopOnDeactivate);
 }

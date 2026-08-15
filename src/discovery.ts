@@ -1,5 +1,5 @@
 import { execFile } from "node:child_process";
-import { existsSync, statSync } from "node:fs";
+import { statSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import type { DshLocation } from "./types";

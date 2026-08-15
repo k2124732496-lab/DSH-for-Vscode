@@ -1,5 +1,4 @@
 import * as vscode from "vscode";
-import type { DshServer } from "./server";
 import type { ServerSnapshot } from "./types";
 
 type WebviewOutMessage =
@@ -22,12 +21,12 @@ interface WebviewInState {
  */
 export class SidebarProvider implements vscode.WebviewViewProvider {
   private view: vscode.WebviewView | undefined;
-  private lastUrl: string | undefined;
+  private pushSequence = 0;
   private lastSnapshot: ServerSnapshot = { state: "stopped", owned: false };
 
   constructor(
-    private readonly server: DshServer,
     private readonly onCommand: (message: WebviewOutMessage) => void,
+    private readonly toWebviewUrl: (url: string) => Promise<string>,
   ) {}
 
   resolveWebviewView(webviewView: vscode.WebviewView): void {
@@ -44,15 +43,16 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
   }
 
   /** Extension → webview: push the latest server state. */
-  push(snapshot: ServerSnapshot): void {
+  async push(snapshot: ServerSnapshot): Promise<void> {
     this.lastSnapshot = snapshot;
-    const message: WebviewInState = {
-      type: "state",
-      state: snapshot.state,
-      url: snapshot.url,
-      error: snapshot.error,
-    };
-    void this.view?.webview.postMessage(message);
+    const sequence = ++this.pushSequence;
+    let url = snapshot.url;
+    if (url !== undefined && this.view !== undefined) {
+      try { url = await this.toWebviewUrl(url); } catch { url = undefined; }
+    }
+    if (sequence !== this.pushSequence) return;
+    const message: WebviewInState = { type: "state", state: snapshot.state, url, error: snapshot.error };
+    await this.view?.webview.postMessage(message);
   }
 
   private render(webview: vscode.Webview): string {
@@ -68,7 +68,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
       `img-src ${webview.cspSource} data:`,
       `style-src ${webview.cspSource} 'unsafe-inline'`,
       `script-src 'nonce-${cspNonce}'`,
-      "frame-src http://127.0.0.1:* http://localhost:*",
+      "frame-src http://127.0.0.1:* http://localhost:* https:",
     ].join("; ");
 
     return /* html */ `<!DOCTYPE html>

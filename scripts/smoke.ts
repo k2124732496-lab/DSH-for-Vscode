@@ -1,91 +1,58 @@
-// End-to-end smoke test against the real dsh binary: discovery → spawn
-// `dsh web --port 0` → parse the printed URL → health probe → tree kill.
-// Exercises exactly the code path the extension runs. DSH_HOME is redirected
-// to a workspace-local directory so the run stays self-contained.
-import { spawn } from "node:child_process";
-import { closeSync, openSync, readFileSync, rmSync, unlinkSync } from "node:fs";
+/** Runs an opt-in end-to-end DSH smoke test and always cleans its child process and profile. */
+import { spawn, type ChildProcess } from "node:child_process";
+import { closeSync, existsSync, openSync, readFileSync, rmSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
 import { discoverDsh, realDiscoveryEnv } from "../src/discovery";
 import { buildSpawn, defaultNodeBin, killTree, parseWebUrl, probeHealth, scrubExtensionHostEnv } from "../src/server";
 import type { ParsedWebUrl } from "../src/server";
 
-const OUT_FILE = join(process.cwd(), ".smoke-out.log");
-const DSH_HOME = join(process.cwd(), ".smoke-dsh");
-
-function wait(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
+const outputFile = join(process.cwd(), ".smoke-out.log");
+const dshHome = join(process.cwd(), ".smoke-dsh");
+const wait = (milliseconds: number): Promise<void> => new Promise((resolve) => setTimeout(resolve, milliseconds));
 
 async function main(): Promise<void> {
-  const location = await discoverDsh("", realDiscoveryEnv());
-  console.log(`discovered: ${location.kind} ${location.path}`);
+  let child: ChildProcess | undefined;
+  let fileDescriptor: number | undefined;
+  try {
+    const location = await discoverDsh("", realDiscoveryEnv());
+    const spec = buildSpawn(location, ["--profile", "web", "--host", "127.0.0.1", "--port", "0"], process.platform, defaultNodeBin());
+    rmSync(outputFile, { force: true });
+    fileDescriptor = openSync(outputFile, "w");
+    child = spawn(spec.command, spec.args, {
+      shell: spec.shell ?? false,
+      windowsHide: true,
+      cwd: process.cwd(),
+      env: { ...scrubExtensionHostEnv(process.env), DSH_HOME: dshHome },
+      stdio: ["ignore", fileDescriptor, "inherit"],
+    });
 
-  const spec = buildSpawn(
-    location,
-    ["--profile", "web", "--host", "127.0.0.1", "--port", "0"],
-    process.platform,
-    defaultNodeBin(),
-  );
-  console.log(`spawn: ${spec.command} ${spec.args.join(" ")} (shell=${spec.shell ?? false})`);
-
-  // Sandbox-safe stdio: stdout goes to a file we tail (no pipes involved).
-  rmSync(OUT_FILE, { force: true });
-  const fd = openSync(OUT_FILE, "w");
-  const child = spawn(spec.command, spec.args, {
-    shell: spec.shell ?? false,
-    windowsHide: true,
-    cwd: process.cwd(),
-    env: { ...scrubExtensionHostEnv(process.env), DSH_HOME },
-    stdio: ["ignore", fd, "inherit"],
-  });
-
-  const deadline = Date.now() + 60_000;
-  let parsed: ParsedWebUrl | undefined;
-  while (parsed === undefined && Date.now() < deadline) {
-    try {
-      const content = readFileSync(OUT_FILE, "utf8");
-      console.log(`[out] ${content.trimEnd()}`);
-      for (const line of content.split(/\r?\n/)) {
-        parsed = parseWebUrl(line);
-        if (parsed !== undefined) break;
+    const deadline = Date.now() + 60_000;
+    let parsed: ParsedWebUrl | undefined;
+    while (parsed === undefined && Date.now() < deadline) {
+      if (existsSync(outputFile)) {
+        for (const line of readFileSync(outputFile, "utf8").split(/\r?\n/)) {
+          parsed = parseWebUrl(line);
+          if (parsed !== undefined) break;
+        }
       }
-    } catch {
-      /* file not yet written */
+      if (parsed === undefined) await wait(300);
     }
-    if (parsed !== undefined) break;
-    await wait(300);
-  }
-  closeSync(fd);
+    if (parsed === undefined) throw new Error("dsh never printed its URL within 60s");
 
-  if (parsed === undefined) {
-    console.error("dsh never printed its URL within 60s");
-    unlinkSync(OUT_FILE);
-    process.exit(1);
-  }
-  console.log(`parsed URL: ${parsed.url} (port ${parsed.port})`);
-
-  let alive = false;
-  for (let attempt = 0; attempt < 60; attempt += 1) {
-    alive = await probeHealth(`${parsed.url}/`, 1000);
-    if (alive) break;
-    await wait(500);
-  }
-  console.log(`health probe: ${alive ? "OK" : "FAILED"}`);
-
-  const pid = child.pid;
-  await killTree(pid ?? -1, process.platform);
-  await wait(500);
-  console.log(`tree-killed pid ${pid ?? "?"}`);
-
-  unlinkSync(OUT_FILE);
-  rmSync(DSH_HOME, { recursive: true, force: true });
-
-  if (!alive || parsed.port <= 0) {
-    process.exit(1);
+    let alive = false;
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      alive = await probeHealth(parsed.url, 1000);
+      if (alive) break;
+      await wait(500);
+    }
+    if (!alive) throw new Error(`DSH was not reachable at ${parsed.url}`);
+    console.log(`DSH smoke test passed at ${parsed.url}`);
+  } finally {
+    if (fileDescriptor !== undefined) closeSync(fileDescriptor);
+    if (child?.pid !== undefined) await killTree(child.pid, process.platform);
+    if (existsSync(outputFile)) unlinkSync(outputFile);
+    rmSync(dshHome, { recursive: true, force: true });
   }
 }
 
-main().catch((error) => {
-  console.error(error);
-  process.exit(1);
-});
+main().catch((error) => { console.error(error); process.exitCode = 1; });

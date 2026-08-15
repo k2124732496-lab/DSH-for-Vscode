@@ -22,6 +22,4 @@ export interface ServerSnapshot {
   pid?: number;
   /** Human-readable failure detail for the crashed state. */
   error?: string;
-  /** dsh version string when discovery succeeded. */
-  version?: string;
 }
