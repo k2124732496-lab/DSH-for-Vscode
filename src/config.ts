@@ -17,13 +17,15 @@ export interface DshSettings {
   startupTimeoutSeconds: number;
   stopOnDeactivate: boolean;
   autoRestart: boolean;
+  workspaceSyncEnabled: boolean;
+  editorContextEnabled: boolean;
 }
 
 type RawSettings = { [key in keyof DshSettings]?: unknown };
 
 const DEFAULTS: DshSettings = {
   executablePath: "",
-  autoStart: true,
+  autoStart: false,
   port: 0,
   host: "127.0.0.1",
   extraArgs: [],
@@ -32,13 +34,13 @@ const DEFAULTS: DshSettings = {
   startupTimeoutSeconds: 30,
   stopOnDeactivate: true,
   autoRestart: false,
+  workspaceSyncEnabled: true,
+  editorContextEnabled: false,
 };
 
-const RESERVED_ARGUMENT = /^(--(?:profile|host|port)(?:=|$)|--)$/;
+const RESERVED_ARGUMENT = /^(--(?:profile|patch|host|port)(?:=|$)|--)$/;
 const SHELL_META_CHARACTER = /[\r\n&|<>^()%!"']/;
 const ENVIRONMENT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/;
-const HOST_ENVIRONMENT_NAME = new Set(["NODE_OPTIONS", "ELECTRON_RUN_AS_NODE"]);
-const HOST_ENVIRONMENT_PREFIX = ["VSCODE_", "ELECTRON_", "CHROME_"];
 
 function readString(value: unknown, fallback: string, name: string): string {
   if (value === undefined || value === null) return fallback;
@@ -67,7 +69,7 @@ function readExtraArgs(value: unknown): string[] {
   }
   for (const argument of value) {
     if (argument === "" || RESERVED_ARGUMENT.test(argument)) {
-      throw new Error("dsh.extraArgs cannot override --profile, --host, or --port.");
+      throw new Error("dsh.extraArgs cannot override --profile, --patch, --host, or --port.");
     }
     if (SHELL_META_CHARACTER.test(argument)) {
       throw new Error("dsh.extraArgs cannot contain shell control characters.");
@@ -84,11 +86,7 @@ function readExtraEnv(value: unknown): Record<string, string> {
 
   const environment: Record<string, string> = {};
   for (const [name, entry] of Object.entries(value as Record<string, unknown>)) {
-    const upperName = name.toUpperCase();
     if (!ENVIRONMENT_NAME.test(name)) throw new Error(`dsh.extraEnv contains an invalid name: ${name}.`);
-    if (HOST_ENVIRONMENT_NAME.has(upperName) || HOST_ENVIRONMENT_PREFIX.some((prefix) => upperName.startsWith(prefix))) {
-      throw new Error(`dsh.extraEnv cannot override the VS Code host variable ${name}.`);
-    }
     if (typeof entry !== "string") throw new Error(`dsh.extraEnv.${name} must be a string.`);
     environment[name] = entry;
   }
@@ -119,6 +117,8 @@ export function validateSettings(raw: RawSettings): DshSettings {
     ),
     stopOnDeactivate: readBoolean(raw.stopOnDeactivate, DEFAULTS.stopOnDeactivate, "stopOnDeactivate"),
     autoRestart: readBoolean(raw.autoRestart, DEFAULTS.autoRestart, "autoRestart"),
+    workspaceSyncEnabled: readBoolean(raw.workspaceSyncEnabled, DEFAULTS.workspaceSyncEnabled, "workspaceSync.enabled"),
+    editorContextEnabled: readBoolean(raw.editorContextEnabled, DEFAULTS.editorContextEnabled, "editorContext.enabled"),
   };
 }
 
@@ -127,13 +127,38 @@ export function readSettings(): DshSettings {
   const configuration = vscode.workspace.getConfiguration("dsh");
   const raw: RawSettings = {};
   for (const key of Object.keys(DEFAULTS) as (keyof DshSettings)[]) {
-    raw[key] = configuration.get<unknown>(key);
+    const configurationKey = key === "editorContextEnabled"
+      ? "editorContext.enabled"
+      : key === "workspaceSyncEnabled"
+        ? "workspaceSync.enabled"
+        : key;
+    raw[key] = configuration.get<unknown>(configurationKey);
   }
   return validateSettings(raw);
 }
 
 /** The DSH session directory, or undefined when there is no local workspace folder. */
 export function workspaceCwd(): string | undefined {
-  const folder = vscode.workspace.workspaceFolders?.[0];
-  return folder?.uri.scheme === "file" ? folder.uri.fsPath : undefined;
+  const folders = vscode.workspace.workspaceFolders;
+  const activeUri = vscode.window.activeTextEditor?.document.uri;
+  const activeFolder = activeUri?.scheme === "file" ? vscode.workspace.getWorkspaceFolder(activeUri) : undefined;
+  return selectWorkspaceRoot(folders, activeUri, activeFolder);
+}
+
+interface WorkspaceFolderLike {
+  uri: { scheme: string; fsPath: string };
+}
+
+interface UriLike {
+  scheme: string;
+}
+
+/** Selects the active file's local root, falling back to the first local root. */
+export function selectWorkspaceRoot(
+  folders: readonly WorkspaceFolderLike[] | undefined,
+  activeUri: UriLike | undefined,
+  activeFolder: WorkspaceFolderLike | undefined,
+): string | undefined {
+  if (activeUri?.scheme === "file" && activeFolder?.uri.scheme === "file") return activeFolder.uri.fsPath;
+  return folders?.find((folder) => folder.uri.scheme === "file")?.uri.fsPath;
 }

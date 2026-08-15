@@ -34,6 +34,7 @@ function cliArgs(entries, outdir, outbase) {
     "--external:vscode",
     `--outbase=${outbase}`,
     `--outdir=${outdir}`,
+    ...(buildTests ? ["--alias:vscode=./src/vscode-test-stub.ts"] : []),
     "--log-level=info",
   ];
 }
@@ -64,6 +65,7 @@ async function main() {
     format: "cjs",
     sourcemap: true,
     external: ["vscode"],
+    alias: buildTests ? { vscode: "./src/vscode-test-stub.ts" } : undefined,
     logLevel: "info",
     outbase,
   };

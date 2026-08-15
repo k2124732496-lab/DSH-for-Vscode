@@ -4,6 +4,7 @@ import { closeSync, existsSync, openSync, readFileSync, rmSync, unlinkSync } fro
 import { join } from "node:path";
 import { discoverDsh, realDiscoveryEnv } from "../src/discovery";
 import { buildSpawn, defaultNodeBin, killTree, parseWebUrl, probeHealth, scrubExtensionHostEnv } from "../src/server";
+import { EditorContextBridge } from "../src/editor-context-bridge";
 import type { ParsedWebUrl } from "../src/server";
 
 const outputFile = join(process.cwd(), ".smoke-out.log");
@@ -13,9 +14,19 @@ const wait = (milliseconds: number): Promise<void> => new Promise((resolve) => s
 async function main(): Promise<void> {
   let child: ChildProcess | undefined;
   let fileDescriptor: number | undefined;
+  let bridge: EditorContextBridge | undefined;
   try {
     const location = await discoverDsh("", realDiscoveryEnv());
-    const spec = buildSpawn(location, ["--profile", "web", "--host", "127.0.0.1", "--port", "0"], process.platform, defaultNodeBin());
+    bridge = new EditorContextBridge({
+      storageDirectory: dshHome,
+      pluginPath: join(process.cwd(), "dsh", "editor-context-plugin.mjs"),
+      workspaceClientPath: join(process.cwd(), "dsh", "workspace-sync-client.js"),
+      editorContextEnabled: false,
+      workspaceSyncEnabled: true,
+      snapshot: (now, ttlMs) => ({ version: 1, expiresAt: now + ttlMs, workspaceRoot: process.cwd(), files: [] }),
+    });
+    await bridge.initialize();
+    const spec = buildSpawn(location, ["--profile", "web", "--patch", bridge.patchPath, "--host", "127.0.0.1", "--port", "0"], process.platform, defaultNodeBin());
     rmSync(outputFile, { force: true });
     fileDescriptor = openSync(outputFile, "w");
     child = spawn(spec.command, spec.args, {
@@ -46,10 +57,18 @@ async function main(): Promise<void> {
       await wait(500);
     }
     if (!alive) throw new Error(`DSH was not reachable at ${parsed.url}`);
+    const indexHtml = await (await fetch(parsed.url)).text();
+    if (!indexHtml.includes("integration:vscode-workspace-sync")) {
+      throw new Error("DSH index did not include the VS Code workspace client entry");
+    }
+    const stateUrl = new URL(`/__dsh_vscode/${bridge.routeToken}/state.json`, parsed.url);
+    const bridgeState = await (await fetch(stateUrl)).json() as { workspaceRoot?: string };
+    if (bridgeState.workspaceRoot !== process.cwd()) throw new Error("DSH workspace bridge returned the wrong root");
     console.log(`DSH smoke test passed at ${parsed.url}`);
   } finally {
     if (fileDescriptor !== undefined) closeSync(fileDescriptor);
     if (child?.pid !== undefined) await killTree(child.pid, process.platform);
+    await bridge?.dispose();
     if (existsSync(outputFile)) unlinkSync(outputFile);
     rmSync(dshHome, { recursive: true, force: true });
   }

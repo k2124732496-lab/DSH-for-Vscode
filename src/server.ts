@@ -23,6 +23,11 @@ export interface SpawnedChild {
 export type SpawnFn = (spec: SpawnSpec, cwd: string, env: Record<string, string | undefined>) => SpawnedChild;
 export type KillFn = (pid: number) => Promise<void>;
 export type ProbeFn = (url: string, timeoutMs: number) => Promise<boolean>;
+export type FixedPortProbeResult =
+  | { kind: "dsh" }
+  | { kind: "free" }
+  | { kind: "occupied"; reason: string };
+export type FixedPortProbeFn = (url: string, timeoutMs: number) => Promise<FixedPortProbeResult>;
 export type LogFn = (message: string) => void;
 
 /** Parses the loopback URL printed by the DSH web profile. */
@@ -59,29 +64,56 @@ export function probeHealth(url: string, timeoutMs: number): Promise<boolean> {
   });
 }
 
-/** Detects the DSH web UI before attaching to a fixed port. */
-export function probeDsh(url: string, timeoutMs: number): Promise<boolean> {
+/** Distinguishes a reusable DSH instance from a free or foreign fixed port. */
+export function probeFixedPort(url: string, timeoutMs: number): Promise<FixedPortProbeResult> {
   return new Promise((resolve) => {
     let settled = false;
     let body = "";
-    const done = (value: boolean) => { if (!settled) { settled = true; resolve(value); } };
+    const done = (value: FixedPortProbeResult) => { if (!settled) { settled = true; resolve(value); } };
     try {
       const request = httpGet(url, (response) => {
         const header = String(response.headers["x-dsh"] ?? response.headers["x-powered-by"] ?? "").toLowerCase();
         response.setEncoding("utf8");
-        response.on("data", (chunk: string) => { if (body.length < 32 * 1024) body += chunk.slice(0, 32 * 1024 - body.length); });
+        response.on("data", (chunk: string) => {
+          if (body.length < 32 * 1024) body += chunk.slice(0, 32 * 1024 - body.length);
+        });
         response.on("end", () => {
           const status = response.statusCode ?? 500;
-          done(status >= 200 && status < 400 && (header.includes("dsh") || body.toLowerCase().includes("deepseek harness") || body.includes("data-dsh-web")));
+          const lowerBody = body.toLowerCase();
+          const isDsh = header.includes("dsh")
+            || lowerBody.includes("deepseek harness")
+            || lowerBody.includes("data-dsh-web")
+            || lowerBody.includes("window.__dsh_boot__");
+          if (status >= 200 && status < 400 && isDsh) {
+            done({ kind: "dsh" });
+            return;
+          }
+          const reason = status < 200 || status >= 400
+            ? `The endpoint returned HTTP ${String(status)}.`
+            : "The HTTP endpoint did not identify itself as DSH.";
+          done({ kind: "occupied", reason });
         });
-        response.on("error", () => done(false));
+        response.on("error", (error: Error) => {
+          done({ kind: "occupied", reason: `The HTTP endpoint failed during probing: ${error.message}` });
+        });
       });
-      request.on("error", () => done(false));
-      request.setTimeout(timeoutMs, () => { request.destroy(); done(false); });
-    } catch { done(false); }
+      request.on("error", (error: NodeJS.ErrnoException) => {
+        if (error.code === "ECONNREFUSED") {
+          done({ kind: "free" });
+          return;
+        }
+        done({ kind: "occupied", reason: `The port could not be safely identified: ${error.message}` });
+      });
+      request.setTimeout(timeoutMs, () => {
+        done({ kind: "occupied", reason: `The endpoint did not identify itself within ${String(timeoutMs)}ms.` });
+        request.destroy();
+      });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : String(error);
+      done({ kind: "occupied", reason: `The port probe failed: ${reason}` });
+    }
   });
 }
-
 export function defaultNodeBin(execPath: string = process.execPath): string {
   const base = basename(execPath).toLowerCase();
   return base === "node" || base === "node.exe" ? execPath : "node";
@@ -152,13 +184,13 @@ function redactArgs(args: string[]): string[] {
   return args.map((arg) => { if (hideNext) { hideNext = false; return "***"; } if (/--(?:token|secret|password|api[-_]?key)(?:=|$)/i.test(arg)) { hideNext = !arg.includes("="); return arg.includes("=") ? `${arg.slice(0, arg.indexOf("=") + 1)}***` : arg; } return redact(arg); });
 }
 
-export interface DshLaunchSettings { port: number; host: string; extraArgs: string[]; extraEnv: Record<string, string>; dshHome: string; startupTimeoutSeconds: number; autoRestart: boolean }
+export interface DshLaunchSettings { port: number; host: string; extraArgs: string[]; extraEnv: Record<string, string>; dshHome: string; startupTimeoutSeconds: number; autoRestart: boolean; editorContextPatchPath?: string }
 export interface DshServerOptions {
   resolveLocation(): Promise<DshLocation>;
   settings(): DshLaunchSettings;
   cwd(): string | undefined;
   log?: LogFn;
-  spawnFn?: SpawnFn; killFn?: KillFn; probeFn?: ProbeFn; identifyFn?: ProbeFn;
+  spawnFn?: SpawnFn; killFn?: KillFn; probeFn?: ProbeFn; fixedPortProbeFn?: FixedPortProbeFn;
   platform?: NodeJS.Platform; nodeBin?: string; parentEnv?: () => Record<string, string | undefined>;
   probeIntervalMs?: number; restartDelayMs?: number; attachedProbeIntervalMs?: number;
 }
@@ -212,13 +244,28 @@ export class DshServer {
     if (!this.current(sequence)) return this.getSnapshot();
     if (settings.port !== 0) {
       const url = loopbackUrl(settings.host, settings.port);
-      let isDsh = false; try { isDsh = await (this.options.identifyFn ?? this.options.probeFn ?? probeDsh)(url, 1000); } catch {}
+      const probeTimeoutMs = Math.min(settings.startupTimeoutSeconds * 1000, 5000);
+      let probeResult: FixedPortProbeResult;
+      try {
+        probeResult = await (this.options.fixedPortProbeFn ?? probeFixedPort)(url, probeTimeoutMs);
+      } catch (error) {
+        probeResult = { kind: "occupied", reason: `The port probe failed: ${describeError(error)}` };
+      }
       if (!this.current(sequence)) return this.getSnapshot();
-      if (isDsh) { this.setState("running", { url, port: settings.port, owned: false, error: undefined }); this.monitorAttached(sequence, url); return this.getSnapshot(); }
+      if (probeResult.kind === "dsh") {
+        this.setState("running", { url, port: settings.port, owned: false, error: undefined });
+        this.monitorAttached(sequence, url);
+        return this.getSnapshot();
+      }
+      if (probeResult.kind === "occupied") {
+        this.crash(sequence, `Port ${String(settings.port)} is already in use, but the endpoint is not DSH. ${probeResult.reason} Stop that service, choose another dsh.port, or set dsh.port to 0.`);
+        return this.getSnapshot();
+      }
     }
     let location: DshLocation; try { location = await this.options.resolveLocation(); } catch (error) { this.crash(sequence, describeError(error)); return this.getSnapshot(); }
     if (!this.current(sequence)) return this.getSnapshot();
-    const args = ["--profile", "web", "--host", settings.host, "--port", String(settings.port), ...settings.extraArgs];
+    const patchArgs = settings.editorContextPatchPath === undefined ? [] : ["--patch", settings.editorContextPatchPath];
+    const args = ["--profile", "web", ...patchArgs, "--host", settings.host, "--port", String(settings.port), ...settings.extraArgs];
     const spec = buildSpawn(location, args, this.options.platform ?? process.platform, this.options.nodeBin ?? defaultNodeBin());
     const env: Record<string, string | undefined> = { ...scrubExtensionHostEnv((this.options.parentEnv ?? (() => process.env))()) };
     if (settings.dshHome !== "") env.DSH_HOME = settings.dshHome; Object.assign(env, settings.extraEnv);

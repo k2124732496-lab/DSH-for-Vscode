@@ -1,5 +1,6 @@
 /** 检查源码文本编码及最终生成的 Sidebar 内嵌脚本。 */
 import { execFileSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import vm from "node:vm";
 import { buildSync } from "esbuild";
@@ -46,6 +47,7 @@ const loadedModule = { exports: {} };
 new Function("require", "module", "exports", bundledSidebar)(
   (specifier) => {
     if (specifier === "vscode") return {};
+    if (specifier === "node:crypto") return { randomBytes };
     throw new Error(`测试中出现未处理的模块：${specifier}`);
   },
   loadedModule,
@@ -55,6 +57,12 @@ new Function("require", "module", "exports", bundledSidebar)(
 const SidebarProvider = loadedModule.exports.SidebarProvider;
 const provider = new SidebarProvider(() => undefined, async (url) => url);
 const html = provider.render({ cspSource: "vscode-webview://test" });
+const nonceMatch = html.match(/script-src 'nonce-([A-Za-z0-9_-]+)'/);
+if (!nonceMatch || !/^[A-Za-z0-9_-]{22}$/.test(nonceMatch[1])) {
+  throw new Error("Sidebar CSP nonce must be a 16-byte base64url value");
+}
+const secondHtml = provider.render({ cspSource: "vscode-webview://test" });
+if (secondHtml.includes(`nonce-${nonceMatch[1]}`)) throw new Error("Sidebar CSP nonce was reused");
 for (const symbol of ["▶", "↻", "■", "↗"]) {
   if (!html.includes(symbol)) throw new Error(`Sidebar 缺少按钮符号：${symbol}`);
 }

@@ -7,6 +7,7 @@ import {
   defaultNodeBin,
   DshServer,
   parseWebUrl,
+  probeFixedPort,
   probeHealth,
   scrubExtensionHostEnv,
   type SpawnedChild,
@@ -52,6 +53,45 @@ describe("probeHealth", () => {
   it("rejects a dead port quickly", async () => {
     // Port 1 is reserved and never serves HTTP on loopback in practice.
     assert.equal(await probeHealth("http://127.0.0.1:1/", 1000), false);
+  });
+});
+
+describe("probeFixedPort", () => {
+  it("identifies the DSH boot contract", async () => {
+    const server: HttpServer = createServer((_req, response) => {
+      response.writeHead(200, { "content-type": "text/html" });
+      response.end('<script>window.__DSH_BOOT__ = {"entries":[]}</script>');
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    try {
+      assert.deepEqual(
+        await probeFixedPort(`http://127.0.0.1:${String(port)}/`, 2000),
+        { kind: "dsh" },
+      );
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("reports an occupied port when another HTTP service answers", async () => {
+    const server: HttpServer = createServer((_req, response) => {
+      response.writeHead(200, { "content-type": "text/plain" });
+      response.end("another service");
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    const { port } = server.address() as AddressInfo;
+    try {
+      const result = await probeFixedPort(`http://127.0.0.1:${String(port)}/`, 2000);
+      assert.equal(result.kind, "occupied");
+      if (result.kind === "occupied") assert.match(result.reason, /not identify/i);
+    } finally {
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+    }
+  });
+
+  it("reports a refused loopback port as free", async () => {
+    assert.deepEqual(await probeFixedPort("http://127.0.0.1:1/", 1000), { kind: "free" });
   });
 });
 
@@ -251,6 +291,32 @@ describe("DshServer lifecycle", () => {
     ]);
   });
 
+  it("places the editor context patch before DSH web arguments", async () => {
+    const harness = makeHarness({
+      settings: () => ({
+        port: 0,
+        host: "127.0.0.1",
+        extraArgs: ["--trusted-host", "example.test"],
+        extraEnv: {},
+        dshHome: "",
+        startupTimeoutSeconds: 2,
+        autoRestart: false,
+        editorContextPatchPath: "C:\\context data\\editor-context.patch.yaml",
+      }),
+    });
+    const pending = harness.server.start();
+    await waitFor(() => harness.currentChild() !== undefined);
+    harness.currentChild()!.emitLine(readyLine);
+    await pending;
+    assert.deepEqual(harness.spawns[0]?.args.slice(1), [
+      "--profile", "web",
+      "--patch", "C:\\context data\\editor-context.patch.yaml",
+      "--host", "127.0.0.1",
+      "--port", "0",
+      "--trusted-host", "example.test",
+    ]);
+  });
+
   it("attaches to an existing instance on a fixed port without spawning", async () => {
     const harness = makeHarness({
       settings: () => ({
@@ -262,7 +328,7 @@ describe("DshServer lifecycle", () => {
         startupTimeoutSeconds: 2,
         autoRestart: false,
       }),
-      probeFn: async () => true,
+      fixedPortProbeFn: async () => ({ kind: "dsh" }),
     });
     const snapshot = await harness.server.start();
     assert.equal(snapshot.state, "running");
@@ -282,7 +348,7 @@ describe("DshServer lifecycle", () => {
         startupTimeoutSeconds: 2,
         autoRestart: false,
       }),
-      probeFn: async (url) => (url === "http://127.0.0.1:3080" ? false : true),
+      fixedPortProbeFn: async () => ({ kind: "free" }),
     });
     const pending = harness.server.start();
     await waitFor(() => harness.currentChild() !== undefined);
@@ -290,6 +356,26 @@ describe("DshServer lifecycle", () => {
     const snapshot = await pending;
     assert.equal(snapshot.state, "running");
     assert.equal(snapshot.owned, true);
+  });
+
+
+  it("does not spawn when a fixed port is occupied by a non-DSH service", async () => {
+    const harness = makeHarness({
+      settings: () => ({
+        port: 3080,
+        host: "127.0.0.1",
+        extraArgs: [],
+        extraEnv: {},
+        dshHome: "",
+        startupTimeoutSeconds: 2,
+        autoRestart: false,
+      }),
+      fixedPortProbeFn: async () => ({ kind: "occupied", reason: "HTTP endpoint did not identify itself as DSH." }),
+    });
+    const snapshot = await harness.server.start();
+    assert.equal(snapshot.state, "crashed");
+    assert.match(snapshot.error ?? "", /port 3080.*already in use.*not DSH/i);
+    assert.equal(harness.spawns.length, 0);
   });
 
   it("reports crashed when discovery fails", async () => {
@@ -403,7 +489,12 @@ describe("DshServer lifecycle", () => {
         port: 0,
         host: "127.0.0.1",
         extraArgs: [],
-        extraEnv: { MY_FLAG: "1" },
+        extraEnv: {
+          MY_FLAG: "1",
+          NODE_OPTIONS: "--trace-warnings",
+          ELECTRON_RUN_AS_NODE: "0",
+          VSCODE_EXPLICIT_OVERRIDE: "enabled",
+        },
         dshHome: "C:\\custom\\dsh-home",
         startupTimeoutSeconds: 2,
         autoRestart: false,
@@ -420,9 +511,10 @@ describe("DshServer lifecycle", () => {
     harness.currentChild()!.emitLine(readyLine);
     await pending;
     assert.equal(capturedEnv?.["PATH"], "C:\\Windows");
-    assert.equal(capturedEnv?.["NODE_OPTIONS"], undefined);
+    assert.equal(capturedEnv?.["NODE_OPTIONS"], "--trace-warnings");
     assert.equal(capturedEnv?.["VSCODE_IPC_HOOK_CLI"], undefined);
-    assert.equal(capturedEnv?.["ELECTRON_RUN_AS_NODE"], undefined);
+    assert.equal(capturedEnv?.["ELECTRON_RUN_AS_NODE"], "0");
+    assert.equal(capturedEnv?.["VSCODE_EXPLICIT_OVERRIDE"], "enabled");
     assert.equal(capturedEnv?.["DSH_HOME"], "C:\\custom\\dsh-home");
     assert.equal(capturedEnv?.["MY_FLAG"], "1");
   });
@@ -443,6 +535,7 @@ describe("DshServer lifecycle", () => {
 
   it("stop() on an attached instance just detaches without killing anything", async () => {
     const harness = makeHarness({
+      fixedPortProbeFn: async () => ({ kind: "dsh" }),
       settings: () => ({
         port: 3080,
         host: "127.0.0.1",

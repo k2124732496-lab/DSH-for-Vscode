@@ -12,8 +12,10 @@ preview/SCM panels, …) — is available right inside the editor.
 - **Sidebar panel** embedding the complete DSH web GUI (`dsh web` on `127.0.0.1`).
 - **Lifecycle management**: auto-start on activation, Start / Stop / Restart
   commands, status-bar indicator with the live port.
-- **Workspace-aware**: DSH launches with your first workspace folder as the
-  session working directory; switching workspaces restarts it in the new folder.
+- **Workspace-aware**: managed DSH automatically registers and selects the
+  workspace/session matching the active local VS Code workspace folder.
+- **Optional editor context**: visible and pinned local file metadata can be
+  exposed to managed DSH without copying file contents or changing VS Code workspace folders.
 - **Verified fixed-port reuse**: with `dsh.port` set (non-zero), the extension attaches only after the existing endpoint identifies itself as DSH.
 - **Open in Browser**, output-channel logging, and a start/error screen with
   actionable hints when `dsh` is missing.
@@ -34,7 +36,7 @@ preview/SCM panels, …) — is available right inside the editor.
 
 1. Run `npm run package` (produces `dsh-for-vscode-<version>.vsix`), then in
    VS Code: **Extensions → … → Install from VSIX…** and pick the file.
-2. Open a workspace folder; DSH auto-starts in the sidebar (activity-bar icon).
+2. Open a workspace folder, then open the DSH sidebar (activity-bar icon) or run `DSH: Start Server`.
 
 ### From source (development)
 
@@ -49,15 +51,17 @@ preview/SCM panels, …) — is available right inside the editor.
 | Setting | Default | Description |
 | --- | --- | --- |
 | `dsh.executablePath` | `""` | Explicit `dsh` path (bin.js / `.cmd` / executable). Empty = auto-detect. |
-| `dsh.autoStart` | `true` | Start the server automatically when a workspace is open. |
+| `dsh.autoStart` | `false` | Start the server automatically when a workspace is open. Opening the DSH panel still starts it on demand. |
 | `dsh.port` | `0` | Web-server port; `0` = OS-assigned. Non-zero ports are probed for an existing instance first. |
 | `dsh.host` | `127.0.0.1` | Loopback only: `127.0.0.1` or `localhost`. |
 | `dsh.extraArgs` | `[]` | Machine-level extra args; cannot override profile, host, or port. |
-| `dsh.extraEnv` | `{}` | Extra environment variables for the DSH process. Host-only variables (`NODE_OPTIONS`, `VSCODE_*`, `ELECTRON_*`) are always scrubbed — set them here deliberately if needed. |
+| `dsh.extraEnv` | `{}` | Explicit environment variables applied after inherited VS Code/Electron/Chrome values are scrubbed, so trusted values here can restore or override them. |
 | `dsh.dshHome` | `""` | Custom `DSH_HOME`. Empty inherits the default (`~/.dsh`). |
 | `dsh.startupTimeoutSeconds` | `30` | Readiness timeout after spawn. |
 | `dsh.stopOnDeactivate` | `true` | Kill the spawned server when VS Code exits/reloads. |
 | `dsh.autoRestart` | `false` | Auto-restart (max 3 attempts) after an unexpected crash. |
+| `dsh.workspaceSync.enabled` | `true` | Keep managed DSH on the active local VS Code workspace. In multi-root windows, the active file selects the root. |
+| `dsh.editorContext.enabled` | `false` | Send short-lived visible/pinned file metadata to extension-managed DSH. Enabling or disabling restarts managed DSH. |
 
 ## Commands
 
@@ -66,18 +70,28 @@ preview/SCM panels, …) — is available right inside the editor.
 - `DSH: Open in Browser` — open the GUI in your default browser.
 - `DSH: Show Logs` — the DSH output channel.
 
+- `DSH: Pin Current File` / `DSH: Unpin Current File` persist or remove a file from editor context.
+- `DSH: Manage Context Files` inspects visible, pinned, and session-authorized external files; pinned items can be removed.
+
+Editor context contains paths, workspace-relative paths, language IDs, dirty flags,
+and one-based selections only. Unsaved file contents are not sent. External files
+require one session-only confirmation, and existing DSH write approvals still apply.
+The feature is unavailable when a fixed port attaches to a DSH process that this
+extension did not start.
+
 ## How it works
 
 1. **Discovery** — `dsh.executablePath`, then the global npm
    `@deepseek-ai/dsh/lib/bin.js` (spawned via `node`), then `dsh` on PATH.
-2. **Spawn** — `dsh --profile web --host 127.0.0.1 --port <port>` with the
-   first workspace folder as `cwd`, and with the VS Code host's own
+2. **Spawn** — `dsh --profile web [--patch <vscode-integration-patch>] --host 127.0.0.1 --port <port>` with the
+   active local workspace root as `cwd`, and with the VS Code host's own
    environment variables scrubbed (`NODE_OPTIONS` points at VS Code bootstrap
    files and must never leak into the child).
 3. **Readiness** — the `dsh web: http://127.0.0.1:PORT` line is parsed from
    stdout and confirmed by HTTP health probes.
 4. **Embed** — the sidebar webview loads that loopback URL in a sandboxed
-   iframe; a postMessage bridge relays start/stop/restart and state updates.
+   iframe. The bundled DSH client adapter registers the active VS Code root,
+   reuses or creates its blank session, and selects it without deleting history.
 5. **Teardown** — Windows uses `taskkill /T /F` (whole-tree kill); POSIX uses
    process-group SIGTERM→SIGKILL.
 
@@ -89,9 +103,8 @@ preview/SCM panels, …) — is available right inside the editor.
   fixed port really serves DSH (the extension attaches only after it verifies the endpoint is DSH).
 - **Blank panel** — check the DSH output channel (`DSH: Show Logs`) and the
   status-bar tooltip; restart with `DSH: Restart Server`.
-- **Sessions in the wrong folder** — DSH uses the first workspace folder as
-  the working directory; open the project as the workspace root (the GUI's
-  directory picker can also switch).
+- **Workspace sync unavailable** — it only applies to a DSH process started by
+  this extension. Fixed-port attachment to an external DSH instance is left unchanged.
 
 ## Roadmap
 

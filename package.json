@@ -2,7 +2,7 @@
   "name": "dsh-for-vscode",
   "displayName": "DSH for VS Code",
   "description": "Use DeepSeek Harness (DSH) inside VS Code: the full DSH web GUI embedded in the sidebar, with server lifecycle management (auto-start, start/stop/restart, status bar).",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "publisher": "KAZUHA",
   "license": "MIT",
   "icon": "media/ds.jpg",
@@ -87,6 +87,18 @@
         "command": "dsh.showLogs",
         "title": "DSH: Show Logs",
         "icon": "$(output)"
+      },
+      {
+        "command": "dsh.pinCurrentFile",
+        "title": "DSH: Pin Current File"
+      },
+      {
+        "command": "dsh.unpinCurrentFile",
+        "title": "DSH: Unpin Current File"
+      },
+      {
+        "command": "dsh.manageContextFiles",
+        "title": "DSH: Manage Context Files"
       }
     ],
     "menus": {
@@ -129,8 +141,8 @@
         },
         "dsh.autoStart": {
           "type": "boolean",
-          "default": true,
-          "description": "Start the DSH web server automatically when a trusted local workspace folder is open."
+          "default": false,
+          "description": "Start the DSH web server automatically when a trusted local workspace folder is open. Disabled by default; opening the DSH panel still starts it on demand."
         },
         "dsh.port": {
           "type": "number",
@@ -160,7 +172,7 @@
         "dsh.extraEnv": {
           "type": "object",
           "default": {},
-          "description": "Extra environment variables for the DSH process. VS Code host variables (NODE_OPTIONS, VSCODE_*, ELECTRON_*) are always scrubbed; set them here deliberately if needed.",
+          "description": "Extra environment variables applied after inherited VS Code/Electron/Chrome variables are scrubbed. Explicit values here can restore or override those variables; only do so with trusted values.",
           "scope": "machine"
         },
         "dsh.dshHome": {
@@ -185,6 +197,16 @@
           "type": "boolean",
           "default": false,
           "description": "Automatically restart the server after an unexpected crash."
+        },
+        "dsh.workspaceSync.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Automatically select the DSH workspace and session that match the active local VS Code workspace folder. This is independent of editor context sharing."
+        },
+        "dsh.editorContext.enabled": {
+          "type": "boolean",
+          "default": false,
+          "description": "Share short-lived metadata for visible and pinned local files with DSH. File contents are never copied into the bridge file; enabling this restarts managed DSH."
         }
       }
     }
@@ -194,7 +216,7 @@
     "build": "npm run typecheck && node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "pretest": "npm run typecheck && node esbuild.mjs --test",
-    "test": "node scripts/check-ui.mjs && node --test dist-test/discovery.test.js dist-test/server.test.js",
+    "test": "node scripts/check-ui.mjs && node --test dist-test/config.test.js dist-test/discovery.test.js dist-test/editor-context.test.js dist-test/editor-context-bridge.test.js dist-test/editor-context-plugin.test.js dist-test/editor-context-vscode.test.js dist-test/workspace-sync-client.test.js dist-test/server.test.js",
     "smoke": "npm run typecheck && node esbuild.mjs --smoke && node dist-smoke/smoke.js",
     "vscode:prepublish": "npm run build",
     "package": "npm run build && vsce package",
