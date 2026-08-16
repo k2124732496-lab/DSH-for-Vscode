@@ -1,4 +1,4 @@
-# DSH for VS Code（Welcome everyone to develop together）
+# DSH for VS Code (Welcome everyone to develop together)
 
 Use [DeepSeek Harness](https://www.npmjs.com/package/@deepseek-ai/dsh) (DSH) inside
 VS Code the way Codex / Claude Code extensions work: the extension manages a
@@ -9,13 +9,18 @@ preview/SCM panels, …) — is available right inside the editor.
 
 ## Features
 
-- **Sidebar panel** embedding the complete DSH web GUI (`dsh web` on `127.0.0.1`).
+- **Native Secondary Sidebar** embedding the complete DSH web GUI (`dsh web` on `127.0.0.1`).
+- **Editor title shortcut**: click the DSH icon in the editor's upper-right corner to start DSH and focus its sidebar.
+- VS Code versions before 1.106 automatically use the legacy Activity Bar location instead.
 - **Lifecycle management**: auto-start on activation, Start / Stop / Restart
   commands, status-bar indicator with the live port.
 - **Workspace-aware**: managed DSH automatically registers and selects the
   workspace/session matching the active local VS Code workspace folder.
 - **Optional editor context**: visible and pinned local file metadata can be
   exposed to managed DSH without copying file contents or changing VS Code workspace folders.
+- **Notebook context**: local `.ipynb` and other VS Code Notebooks expose the
+  active/selected cells, language, cell kind, dirty state, and one-based
+  selection coordinates without exposing cell source or outputs.
 - **Verified fixed-port reuse**: with `dsh.port` set (non-zero), the extension attaches only after the existing endpoint identifies itself as DSH.
 - **Open in Browser**, output-channel logging, and a start/error screen with
   actionable hints when `dsh` is missing.
@@ -23,7 +28,7 @@ preview/SCM panels, …) — is available right inside the editor.
 
 ## Requirements
 
-- VS Code `>= 1.90` (desktop) with a trusted local workspace folder.
+- VS Code `>= 1.90` (desktop) with a trusted local workspace folder. VS Code `>= 1.106` uses the native Secondary Sidebar; older supported versions use the Activity Bar fallback.
 - Node.js `>= 18` on PATH.
 - A `dsh` installation, either:
   - global npm install: `npm install -g @deepseek-ai/dsh` (auto-detected), or
@@ -36,7 +41,7 @@ preview/SCM panels, …) — is available right inside the editor.
 
 1. Run `npm run package` (produces `dsh-for-vscode-<version>.vsix`), then in
    VS Code: **Extensions → … → Install from VSIX…** and pick the file.
-2. Open a workspace folder, then open the DSH sidebar (activity-bar icon) or run `DSH: Start Server`.
+2. Open a workspace folder, then click the DSH icon in the editor title, select the DSH sidebar icon, or run `DSH: Open Sidebar`.
 
 ### From source (development)
 
@@ -61,11 +66,11 @@ preview/SCM panels, …) — is available right inside the editor.
 | `dsh.stopOnDeactivate` | `true` | Kill the spawned server when VS Code exits/reloads. |
 | `dsh.autoRestart` | `false` | Auto-restart (max 3 attempts) after an unexpected crash. |
 | `dsh.workspaceSync.enabled` | `true` | Keep managed DSH on the active local VS Code workspace. In multi-root windows, the active file selects the root. |
-| `dsh.editorContext.enabled` | `false` | Send short-lived visible/pinned file metadata to extension-managed DSH. Enabling or disabling restarts managed DSH. |
+| `dsh.editorContext.enabled` | false | Send short-lived metadata for visible and pinned local files and Notebooks to extension-managed DSH. Cell and file contents are never copied into the bridge; changing this setting restarts managed DSH. |
 
 ## Commands
 
-- `DSH: Open Panel` — focus the sidebar; starts the server if needed.
+- `DSH: Open Sidebar` — start DSH if needed and focus the right sidebar (or the legacy left sidebar on VS Code before 1.106).
 - `DSH: Start Server` / `DSH: Stop Server` / `DSH: Restart Server`
 - `DSH: Open in Browser` — open the GUI in your default browser.
 - `DSH: Show Logs` — the DSH output channel.
@@ -74,10 +79,35 @@ preview/SCM panels, …) — is available right inside the editor.
 - `DSH: Manage Context Files` inspects visible, pinned, and session-authorized external files; pinned items can be removed.
 
 Editor context contains paths, workspace-relative paths, language IDs, dirty flags,
-and one-based selections only. Unsaved file contents are not sent. External files
-require one session-only confirmation, and existing DSH write approvals still apply.
+and one-based selections only. For a visible Notebook, it also contains up to
+100 active/selected cell records with one-based cell indexes, code/Markdown
+kind, language, and selection coordinates. Closing the Notebook removes its
+automatic record; pinning it keeps only the `.ipynb` path until it is visible
+again. Unsaved file and cell contents are not sent. External files require one
+session-only confirmation, and existing DSH write approvals still apply.
 The feature is unavailable when a fixed port attaches to a DSH process that this
 extension did not start.
+
+## Notebook context usage
+
+To share Notebook editor metadata with the DSH process started by this
+extension:
+
+1. Set dsh.editorContext.enabled to true in VS Code Settings.
+2. Reload the DSH panel or run DSH: Restart Server so the integration patch is
+   loaded.
+3. Open a local .ipynb file, select one or more cells, and keep the Notebook
+   visible. DSH will receive the Notebook path, active/selected cell indexes,
+   cell kind, language, dirty state, and selection coordinates.
+4. Use DSH: Pin Current File if the Notebook path should remain in context when
+   the Notebook is hidden. Unpin it with DSH: Unpin Current File.
+
+Only local file-based Notebooks are included. Cell source, selected text,
+outputs, execution results, and custom Notebook metadata are never sent. A
+dirty Notebook is marked as potentially stale; save it before asking DSH to
+modify the corresponding file. A Notebook outside the current workspace
+requires one session-only confirmation. The context feature uses the public
+VS Code Notebook API and does not require a private Jupyter extension API.
 
 ## How it works
 

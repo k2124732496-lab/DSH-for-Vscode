@@ -6,6 +6,12 @@ import { disposeLogs, log, showLogs } from "./logger";
 import { DshServer } from "./server";
 import { EditorContextController, type EditorContextSummary } from "./editor-context-vscode";
 import { SidebarProvider } from "./sidebar";
+import {
+  PRIMARY_SIDEBAR_VIEW_ID,
+  resolveSidebarPlacement,
+  SECONDARY_SIDEBAR_VIEW_ID,
+  SIDEBAR_COMPATIBILITY_CONTEXT,
+} from "./sidebar-placement";
 import { StatusBar } from "./status";
 
 let activeServer: DshServer | undefined;
@@ -25,6 +31,12 @@ function canStartDsh(showMessage: boolean): boolean {
 
 export async function activate(context: vscode.ExtensionContext): Promise<void> {
   log("DSH for VS Code activating");
+  const sidebarPlacement = resolveSidebarPlacement(vscode.version);
+  await vscode.commands.executeCommand(
+    "setContext",
+    SIDEBAR_COMPATIBILITY_CONTEXT,
+    !sidebarPlacement.supportsSecondarySidebar,
+  );
   let editorContext: EditorContextController | undefined;
   let sidebar: SidebarProvider | undefined;
   const server = new DshServer({
@@ -185,8 +197,12 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
     statusBar,
     { dispose: unsubscribe },
     { dispose: disposeLogs },
-    vscode.window.registerWebviewViewProvider("dsh.sidebarView", sidebar, { webviewOptions: { retainContextWhenHidden: true } }),
-    vscode.commands.registerCommand("dsh.openPanel", async () => { await startServer(); await vscode.commands.executeCommand("dsh.sidebarView.focus"); }),
+    vscode.window.registerWebviewViewProvider(PRIMARY_SIDEBAR_VIEW_ID, sidebar, { webviewOptions: { retainContextWhenHidden: true } }),
+    vscode.window.registerWebviewViewProvider(SECONDARY_SIDEBAR_VIEW_ID, sidebar, { webviewOptions: { retainContextWhenHidden: true } }),
+    vscode.commands.registerCommand("dsh.openPanel", async () => {
+      await startServer();
+      await vscode.commands.executeCommand(`${sidebarPlacement.viewId}.focus`);
+    }),
     vscode.commands.registerCommand("dsh.startServer", startServer),
     vscode.commands.registerCommand("dsh.stopServer", () => server.stop()),
     vscode.commands.registerCommand("dsh.restartServer", restartServer),

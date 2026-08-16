@@ -2,7 +2,7 @@
   "name": "dsh-for-vscode",
   "displayName": "DSH for VS Code",
   "description": "Use DeepSeek Harness (DSH) inside VS Code: the full DSH web GUI embedded in the sidebar, with server lifecycle management (auto-start, start/stop/restart, status bar).",
-  "version": "0.1.7",
+  "version": "0.1.9",
   "publisher": "KAZUHA",
   "license": "MIT",
   "icon": "media/ds.jpg",
@@ -43,7 +43,16 @@
         {
           "id": "dsh",
           "title": "DSH",
-          "icon": "media/dsh.svg"
+          "icon": "media/dsh.svg",
+          "when": "dsh.doesNotSupportSecondarySidebar"
+        }
+      ],
+      "secondarySidebar": [
+        {
+          "id": "dshSecondary",
+          "title": "DSH",
+          "icon": "media/dsh.svg",
+          "when": "!dsh.doesNotSupportSecondarySidebar"
         }
       ]
     },
@@ -53,15 +62,28 @@
           "type": "webview",
           "id": "dsh.sidebarView",
           "name": "DSH",
-          "icon": "media/dsh.svg"
+          "icon": "media/dsh.svg",
+          "when": "dsh.doesNotSupportSecondarySidebar"
+        }
+      ],
+      "dshSecondary": [
+        {
+          "type": "webview",
+          "id": "dsh.sidebarSecondaryView",
+          "name": "DSH",
+          "icon": "media/dsh.svg",
+          "when": "!dsh.doesNotSupportSecondarySidebar"
         }
       ]
     },
     "commands": [
       {
         "command": "dsh.openPanel",
-        "title": "DSH: Open Panel",
-        "icon": "$(comment-discussion)"
+        "title": "DSH: Open Sidebar",
+        "icon": {
+          "light": "media/dsh.svg",
+          "dark": "media/dsh.svg"
+        }
       },
       {
         "command": "dsh.startServer",
@@ -127,6 +149,37 @@
           "command": "dsh.showLogs",
           "when": "view == dsh.sidebarView",
           "group": "navigation@9"
+        },
+        {
+          "command": "dsh.startServer",
+          "when": "view == dsh.sidebarSecondaryView && !dsh.running",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dsh.restartServer",
+          "when": "view == dsh.sidebarSecondaryView && dsh.running",
+          "group": "navigation@1"
+        },
+        {
+          "command": "dsh.stopServer",
+          "when": "view == dsh.sidebarSecondaryView && dsh.running",
+          "group": "navigation@2"
+        },
+        {
+          "command": "dsh.openInBrowser",
+          "when": "view == dsh.sidebarSecondaryView && dsh.running",
+          "group": "navigation@3"
+        },
+        {
+          "command": "dsh.showLogs",
+          "when": "view == dsh.sidebarSecondaryView",
+          "group": "navigation@9"
+        }
+      ],
+      "editor/title": [
+        {
+          "command": "dsh.openPanel",
+          "group": "navigation"
         }
       ]
     },
@@ -206,7 +259,7 @@
         "dsh.editorContext.enabled": {
           "type": "boolean",
           "default": false,
-          "description": "Share short-lived metadata for visible and pinned local files with DSH. File contents are never copied into the bridge file; enabling this restarts managed DSH."
+          "description": "Share short-lived metadata for visible and pinned local files and Notebooks with DSH. Cell contents and file contents are never copied into the bridge file; enabling this restarts managed DSH."
         }
       }
     }
@@ -216,7 +269,7 @@
     "build": "npm run typecheck && node esbuild.mjs",
     "watch": "node esbuild.mjs --watch",
     "pretest": "npm run typecheck && node esbuild.mjs --test",
-    "test": "node scripts/check-ui.mjs && node --test dist-test/config.test.js dist-test/discovery.test.js dist-test/editor-context.test.js dist-test/editor-context-bridge.test.js dist-test/editor-context-plugin.test.js dist-test/editor-context-vscode.test.js dist-test/workspace-sync-client.test.js dist-test/server.test.js",
+    "test": "node scripts/check-ui.mjs && node --test dist-test/config.test.js dist-test/discovery.test.js dist-test/editor-context.test.js dist-test/notebook-context.test.js dist-test/editor-context-bridge.test.js dist-test/editor-context-plugin.test.js dist-test/editor-context-vscode.test.js dist-test/workspace-sync-client.test.js dist-test/sidebar-placement.test.js dist-test/server.test.js",
     "smoke": "npm run typecheck && node esbuild.mjs --smoke && node dist-smoke/smoke.js",
     "vscode:prepublish": "npm run build",
     "package": "npm run build && vsce package",

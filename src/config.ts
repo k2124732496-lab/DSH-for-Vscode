@@ -137,11 +137,35 @@ export function readSettings(): DshSettings {
   return validateSettings(raw);
 }
 
+interface UriWithPathLike {
+  scheme: string;
+  fsPath: string;
+}
+
+/** Picks the active tab resource first so Notebook cells map back to their real file. */
+export function selectActiveResourceUri<T extends UriWithPathLike>(
+  activeTabUri: T | undefined,
+  activeTextUri: T | undefined,
+  activeNotebookUri: T | undefined,
+): T | undefined {
+  return [activeTabUri, activeTextUri, activeNotebookUri].find((uri) => uri?.scheme === "file");
+}
+
+/** Returns the current local Text or Notebook resource without depending on private editor APIs. */
+export function activeLocalResourceUri(): vscode.Uri | undefined {
+  const input = vscode.window.tabGroups.activeTabGroup.activeTab?.input as { uri?: vscode.Uri } | undefined;
+  return selectActiveResourceUri(
+    input?.uri,
+    vscode.window.activeTextEditor?.document.uri,
+    vscode.window.activeNotebookEditor?.notebook.uri,
+  );
+}
+
 /** The DSH session directory, or undefined when there is no local workspace folder. */
 export function workspaceCwd(): string | undefined {
   const folders = vscode.workspace.workspaceFolders;
-  const activeUri = vscode.window.activeTextEditor?.document.uri;
-  const activeFolder = activeUri?.scheme === "file" ? vscode.workspace.getWorkspaceFolder(activeUri) : undefined;
+  const activeUri = activeLocalResourceUri();
+  const activeFolder = activeUri === undefined ? undefined : vscode.workspace.getWorkspaceFolder(activeUri);
   return selectWorkspaceRoot(folders, activeUri, activeFolder);
 }
 

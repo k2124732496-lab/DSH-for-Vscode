@@ -1,7 +1,7 @@
 /** Verifies setting defaults, explicit environment overrides, and input validation. */
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
-import { selectWorkspaceRoot, validateSettings } from "./config";
+import { selectActiveResourceUri, selectWorkspaceRoot, validateSettings } from "./config";
 
 describe("validateSettings", () => {
   it("does not start DSH automatically by default", () => {
@@ -42,6 +42,15 @@ describe("validateSettings", () => {
 describe("selectWorkspaceRoot", () => {
   const first = { uri: { scheme: "file", fsPath: "C:\\first" } };
   const second = { uri: { scheme: "file", fsPath: "C:\\second" } };
+  it("uses the active Notebook tab instead of its virtual cell editor", () => {
+    const notebookUri = { scheme: "file", fsPath: "C:\\second\\analysis.ipynb" };
+    assert.equal(selectActiveResourceUri(
+      notebookUri,
+      { scheme: "vscode-notebook-cell", fsPath: "" },
+      notebookUri,
+    ), notebookUri);
+  });
+
 
   it("uses the active file's workspace in a multi-root window", () => {
     assert.equal(selectWorkspaceRoot([first, second], { scheme: "file" }, second), "C:\\second");

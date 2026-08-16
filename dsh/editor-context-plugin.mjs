@@ -9,43 +9,153 @@ const MAX_CONTEXT_BYTES = 1024 * 1024;
 const MAX_CLIENT_BYTES = 1024 * 1024;
 const MAX_CONTEXT_FILES = 256;
 const MAX_SELECTIONS_PER_FILE = 64;
+const MAX_NOTEBOOK_CELLS = 100;
+const MAX_IDENTIFIER_LENGTH = 256;
 const CLIENT_MODULE_ID = "integration:vscode-workspace-sync";
 
-function isSafeInteger(value) {
-  return Number.isSafeInteger(value) && value >= 0;
+function isPositiveSafeInteger(value) {
+  return Number.isSafeInteger(value) && value >= 1;
 }
 
-function isSelection(value) {
-  return value !== null
-    && typeof value === "object"
-    && isSafeInteger(value.startLine)
-    && isSafeInteger(value.startColumn)
-    && isSafeInteger(value.endLine)
-    && isSafeInteger(value.endColumn);
+function normalizeSelection(value, allowZero) {
+  const validCoordinate = allowZero
+    ? (coordinate) => Number.isSafeInteger(coordinate) && coordinate >= 0
+    : isPositiveSafeInteger;
+  if (value === null
+    || typeof value !== "object"
+    || !validCoordinate(value.startLine)
+    || !validCoordinate(value.startColumn)
+    || !validCoordinate(value.endLine)
+    || !validCoordinate(value.endColumn)) return undefined;
+  return {
+    startLine: value.startLine,
+    startColumn: value.startColumn,
+    endLine: value.endLine,
+    endColumn: value.endColumn,
+  };
 }
 
-function isContextFile(value) {
-  return value !== null
-    && typeof value === "object"
-    && typeof value.path === "string"
-    && value.path.length > 0
-    && value.path.length <= 32_768
-    && (value.relativePath === undefined || typeof value.relativePath === "string")
-    && (value.source === "visible" || value.source === "pinned")
-    && typeof value.active === "boolean"
-    && typeof value.languageId === "string"
-    && typeof value.dirty === "boolean"
-    && Array.isArray(value.selections)
-    && value.selections.length <= MAX_SELECTIONS_PER_FILE
-    && value.selections.every(isSelection);
+function normalizeSelections(value, allowZero = false) {
+  if (!Array.isArray(value) || value.length > MAX_SELECTIONS_PER_FILE) return undefined;
+  const selections = value.map((selection) => normalizeSelection(selection, allowZero));
+  return selections.includes(undefined) ? undefined : selections;
+}
+
+function normalizeCommonFile(value) {
+  if (value === null
+    || typeof value !== "object"
+    || typeof value.path !== "string"
+    || value.path.length === 0
+    || value.path.length > 32_768
+    || (value.relativePath !== undefined
+      && (typeof value.relativePath !== "string" || value.relativePath.length > 32_768))
+    || (value.source !== "visible" && value.source !== "pinned")
+    || typeof value.active !== "boolean"
+    || typeof value.dirty !== "boolean") return undefined;
+  return {
+    path: value.path,
+    ...(value.relativePath === undefined ? {} : { relativePath: value.relativePath }),
+    source: value.source,
+    active: value.active,
+    dirty: value.dirty,
+  };
+}
+
+function normalizeTextFile(value, requireEditorType, allowZeroSelections = false) {
+  const common = normalizeCommonFile(value);
+  const selections = normalizeSelections(value?.selections, allowZeroSelections);
+  if (common === undefined
+    || (requireEditorType && value.editorType !== "text")
+    || typeof value.languageId !== "string"
+    || value.languageId.length === 0
+    || value.languageId.length > MAX_IDENTIFIER_LENGTH
+    || selections === undefined) return undefined;
+  return {
+    ...common,
+    editorType: "text",
+    languageId: value.languageId,
+    selections,
+  };
+}
+
+function normalizeNotebookCell(value) {
+  const selections = normalizeSelections(value?.selections);
+  if (value === null
+    || typeof value !== "object"
+    || !isPositiveSafeInteger(value.index)
+    || (value.kind !== "code" && value.kind !== "markup")
+    || typeof value.languageId !== "string"
+    || value.languageId.length === 0
+    || value.languageId.length > MAX_IDENTIFIER_LENGTH
+    || typeof value.active !== "boolean"
+    || typeof value.selected !== "boolean"
+    || selections === undefined) return undefined;
+  return {
+    index: value.index,
+    kind: value.kind,
+    languageId: value.languageId,
+    active: value.active,
+    selected: value.selected,
+    selections,
+  };
+}
+
+function normalizeNotebookFile(value) {
+  const common = normalizeCommonFile(value);
+  if (common === undefined
+    || value.editorType !== "notebook"
+    || typeof value.notebookType !== "string"
+    || value.notebookType.length === 0
+    || value.notebookType.length > MAX_IDENTIFIER_LENGTH
+    || !Array.isArray(value.cells)
+    || value.cells.length > MAX_NOTEBOOK_CELLS
+    || typeof value.cellsTruncated !== "boolean") return undefined;
+  const cells = value.cells.map(normalizeNotebookCell);
+  if (cells.includes(undefined)) return undefined;
+  const indices = new Set(cells.map((cell) => cell.index));
+  if (indices.size !== cells.length) return undefined;
+  return {
+    ...common,
+    editorType: "notebook",
+    notebookType: value.notebookType,
+    cells,
+    cellsTruncated: value.cellsTruncated,
+  };
+}
+
+function normalizeFileOnly(value) {
+  const common = normalizeCommonFile(value);
+  if (common === undefined
+    || value.editorType !== "file"
+    || value.source !== "pinned"
+    || value.active) return undefined;
+  return { ...common, editorType: "file" };
+}
+
+function normalizeV2File(value) {
+  if (value?.editorType === "text") return normalizeTextFile(value, true);
+  if (value?.editorType === "notebook") return normalizeNotebookFile(value);
+  if (value?.editorType === "file") return normalizeFileOnly(value);
+  return undefined;
 }
 
 function parseSnapshot(value, now) {
   if (value === null || typeof value !== "object") return undefined;
-  if (value.version !== 1 || !Number.isFinite(value.expiresAt) || value.expiresAt <= now) return undefined;
+  if ((value.version !== 1 && value.version !== 2)
+    || !Number.isFinite(value.expiresAt)
+    || value.expiresAt <= now) return undefined;
   if (typeof value.workspaceRoot !== "string" || value.workspaceRoot === "" || value.workspaceRoot.length > 32_768) return undefined;
-  if (!Array.isArray(value.files) || value.files.length > MAX_CONTEXT_FILES || !value.files.every(isContextFile)) return undefined;
-  return value;
+  if (!Array.isArray(value.files) || value.files.length > MAX_CONTEXT_FILES) return undefined;
+  const files = value.version === 1
+    ? value.files.map((file) => normalizeTextFile(file, false, true))
+    : value.files.map(normalizeV2File);
+  if (files.includes(undefined)) return undefined;
+  return {
+    version: value.version,
+    expiresAt: value.expiresAt,
+    workspaceRoot: value.workspaceRoot,
+    files,
+  };
 }
 
 function safeJson(value) {

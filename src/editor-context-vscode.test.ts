@@ -22,6 +22,7 @@ describe("toVisibleEditorFile", () => {
   it("maps local metadata with one-based selections and no document contents", () => {
     const activeEditor = editor("file");
     assert.deepEqual(toVisibleEditorFile(activeEditor, activeEditor), {
+      editorType: "text",
       path: "C:\\work\\sample.ts",
       languageId: "typescript",
       dirty: true,
@@ -40,7 +41,7 @@ describe("toVisibleEditorFile", () => {
 describe("integrationSnapshot", () => {
   it("keeps the root but strips every file when editor context is disabled", () => {
     const snapshot = integrationSnapshot({
-      version: 1,
+      version: 2,
       expiresAt: 46_000,
       workspaceRoot: "C:\\OLED",
       files: [{
@@ -48,6 +49,7 @@ describe("integrationSnapshot", () => {
         relativePath: "secret.c",
         source: "visible",
         active: true,
+        editorType: "text",
         languageId: "c",
         dirty: false,
         selections: [],

@@ -8,24 +8,56 @@ export interface EditorSelectionSnapshot {
   endColumn: number;
 }
 
-export interface VisibleEditorFile {
+interface VisibleEditorFileBase {
   path: string;
-  languageId: string;
   dirty: boolean;
   active: boolean;
+}
+
+export interface VisibleTextEditorFile extends VisibleEditorFileBase {
+  editorType: "text";
+  languageId: string;
   selections: EditorSelectionSnapshot[];
 }
+
+export type NotebookCellKind = "code" | "markup";
+
+export interface NotebookCellSnapshot {
+  /** One-based cell index for model-facing display. */
+  index: number;
+  kind: NotebookCellKind;
+  languageId: string;
+  active: boolean;
+  selected: boolean;
+  selections: EditorSelectionSnapshot[];
+}
+
+export interface VisibleNotebookEditorFile extends VisibleEditorFileBase {
+  editorType: "notebook";
+  notebookType: string;
+  cells: NotebookCellSnapshot[];
+  cellsTruncated: boolean;
+}
+
+export type VisibleEditorFile = VisibleTextEditorFile | VisibleNotebookEditorFile;
 
 export type EditorContextSource = "visible" | "pinned";
 export const MAX_PINNED_EDITOR_FILES = 100;
 
-export interface EditorContextFile extends VisibleEditorFile {
+interface EditorContextFileBase extends VisibleEditorFileBase {
   relativePath?: string;
   source: EditorContextSource;
 }
 
+export const MAX_SELECTIONS_PER_EDITOR = 64;
+export const MAX_NOTEBOOK_CONTEXT_CELLS = 100;
+export type EditorContextFile =
+  | (EditorContextFileBase & Omit<VisibleTextEditorFile, keyof VisibleEditorFileBase>)
+  | (EditorContextFileBase & Omit<VisibleNotebookEditorFile, keyof VisibleEditorFileBase>)
+  | (EditorContextFileBase & { editorType: "file" });
+
 export interface EditorContextSnapshot {
-  version: 1;
+  version: 2;
   expiresAt: number;
   workspaceRoot: string;
   files: EditorContextFile[];
@@ -72,19 +104,13 @@ export class EditorContextModel {
     for (const file of files) {
       const absolutePath = this.pathApi.resolve(file.path);
       const key = this.pathKey(absolutePath);
+      const normalized = this.cloneVisibleFile(file, absolutePath);
       const existing = deduplicated.get(key);
       if (existing === undefined) {
-        deduplicated.set(key, {
-          ...file,
-          path: absolutePath,
-          selections: file.selections.map((selection) => ({ ...selection })),
-        });
+        deduplicated.set(key, normalized);
         continue;
       }
-      existing.active ||= file.active;
-      existing.dirty ||= file.dirty;
-      existing.selections.push(...file.selections.map((selection) => ({ ...selection })));
-      if (file.active) existing.languageId = file.languageId;
+      deduplicated.set(key, this.mergeVisibleFiles(existing, normalized));
     }
     this.visibleFiles = [...deduplicated.values()];
     return this.visibleFiles
@@ -139,7 +165,7 @@ export class EditorContextModel {
         .map(([, pinnedPath]) => this.pinnedContextFile(pinnedPath)),
     ].sort((left, right) => Number(right.active) - Number(left.active));
     return {
-      version: 1,
+      version: 2,
       expiresAt: now + ttlMs,
       workspaceRoot: this.normalizedRoot,
       files,
@@ -152,14 +178,30 @@ export class EditorContextModel {
     const insideWorkspace = this.isInsideWorkspace(absolutePath);
     const key = this.pathKey(absolutePath);
     if (!insideWorkspace && !this.pinned.has(key) && !this.allowedExternal.has(key)) return undefined;
-    return {
+    const common: EditorContextFileBase = {
       path: absolutePath,
       ...(insideWorkspace ? { relativePath } : {}),
       source: this.pinned.has(key) ? "pinned" : "visible",
       active: file.active,
-      languageId: file.languageId,
       dirty: file.dirty,
-      selections: file.selections.map((selection) => ({ ...selection })),
+    };
+    if (file.editorType === "text") {
+      return {
+        ...common,
+        editorType: "text",
+        languageId: file.languageId,
+        selections: file.selections.slice(0, MAX_SELECTIONS_PER_EDITOR).map((selection) => ({ ...selection })),
+      };
+    }
+    return {
+      ...common,
+      editorType: "notebook",
+      notebookType: file.notebookType,
+      cells: file.cells.map((cell) => ({
+        ...cell,
+        selections: cell.selections.slice(0, MAX_SELECTIONS_PER_EDITOR).map((selection) => ({ ...selection })),
+      })),
+      cellsTruncated: file.cellsTruncated,
     };
   }
 
@@ -170,10 +212,66 @@ export class EditorContextModel {
       ...(this.isInsideWorkspace(filePath) ? { relativePath } : {}),
       source: "pinned",
       active: false,
-      languageId: "unknown",
       dirty: false,
-      selections: [],
+      editorType: "file",
     };
+  }
+
+  private cloneVisibleFile(file: VisibleEditorFile, absolutePath = this.pathApi.resolve(file.path)): VisibleEditorFile {
+    if (file.editorType === "text") {
+      return {
+        ...file,
+        path: absolutePath,
+        selections: file.selections.slice(0, MAX_SELECTIONS_PER_EDITOR).map((selection) => ({ ...selection })),
+      };
+    }
+    return {
+      ...file,
+      path: absolutePath,
+      cells: file.cells.map((cell) => ({
+        ...cell,
+        selections: cell.selections.slice(0, MAX_SELECTIONS_PER_EDITOR).map((selection) => ({ ...selection })),
+      })),
+    };
+  }
+
+  private mergeVisibleFiles(existing: VisibleEditorFile, incoming: VisibleEditorFile): VisibleEditorFile {
+    if (existing.editorType !== incoming.editorType) {
+      if (incoming.active || (!existing.active && incoming.editorType === "notebook")) return incoming;
+      return existing;
+    }
+    if (existing.editorType === "text" && incoming.editorType === "text") {
+      return {
+        ...existing,
+        active: existing.active || incoming.active,
+        dirty: existing.dirty || incoming.dirty,
+        languageId: incoming.active ? incoming.languageId : existing.languageId,
+        selections: [...existing.selections, ...incoming.selections.map((selection) => ({ ...selection }))].slice(0, MAX_SELECTIONS_PER_EDITOR),
+      };
+    }
+    if (existing.editorType === "notebook" && incoming.editorType === "notebook") {
+      const cells = new Map(existing.cells.map((cell) => [cell.index, cell]));
+      for (const cell of incoming.cells) {
+        const previous = cells.get(cell.index);
+        cells.set(cell.index, previous === undefined ? cell : {
+          ...previous,
+          active: previous.active || cell.active,
+          selected: previous.selected || cell.selected,
+          languageId: cell.active ? cell.languageId : previous.languageId,
+          selections: [...previous.selections, ...cell.selections.map((selection) => ({ ...selection }))].slice(0, MAX_SELECTIONS_PER_EDITOR),
+        });
+      }
+      const mergedCells = [...cells.values()].sort((left, right) => Number(right.active) - Number(left.active));
+      return {
+        ...existing,
+        active: existing.active || incoming.active,
+        dirty: existing.dirty || incoming.dirty,
+        notebookType: incoming.active ? incoming.notebookType : existing.notebookType,
+        cells: mergedCells.slice(0, MAX_NOTEBOOK_CONTEXT_CELLS),
+        cellsTruncated: existing.cellsTruncated || incoming.cellsTruncated || mergedCells.length > MAX_NOTEBOOK_CONTEXT_CELLS,
+      };
+    }
+    return existing;
   }
 
   private isInsideWorkspace(filePath: string): boolean {

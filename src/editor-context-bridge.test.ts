@@ -18,7 +18,7 @@ describe("EditorContextBridge", () => {
       activationId: "test-activation",
       now: () => 1_000,
       snapshot: (now, ttlMs) => ({
-        version: 1,
+        version: 2,
         expiresAt: now + ttlMs,
         workspaceRoot: "C:\\work\\project",
         files: [{
@@ -26,6 +26,7 @@ describe("EditorContextBridge", () => {
           relativePath: "\u4f60\u597d.ts",
           source: "visible",
           active: true,
+          editorType: "text",
           languageId: "typescript",
           dirty: false,
           selections: [],

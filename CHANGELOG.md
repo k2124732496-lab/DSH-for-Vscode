@@ -2,6 +2,66 @@
 
 All notable user-facing changes to DSH for VS Code are documented here.
 
+## [0.1.9] - 2026-08-16
+
+### Added
+
+- Local VS Code Notebooks, including Jupyter `.ipynb` files, now participate in
+  optional editor context.
+- DSH receives the active and selected cell indexes, code/Markdown kind,
+  language ID, dirty state, and one-based text selection coordinates.
+- `DSH: Pin Current File` and `DSH: Unpin Current File` now work when a
+  Notebook tab is active.
+
+### Fixed
+
+- `vscode-notebook-cell:` editors are mapped back to their real local Notebook
+  path instead of being discarded by the normal `file:` URI filter.
+- An active Notebook in a secondary workspace root now selects the correct DSH
+  workspace instead of falling back to the first root.
+- Closing or hiding a Notebook immediately removes its automatic context and
+  clears cached cell selections.
+
+### Privacy and compatibility
+
+- Cell source, selected text, outputs, execution results, and arbitrary Notebook
+  metadata are never written to the bridge.
+- The v2 bridge format is strictly validated, while the bundled DSH plugin
+  continues to accept v1 text snapshots.
+- Notebook support uses only the public VS Code API and has no private Jupyter
+  extension dependency.
+
+### User guide
+
+- Enable dsh.editorContext.enabled, restart the managed DSH server, and open a
+  local .ipynb file to share its active and selected cell metadata.
+- Use DSH: Pin Current File to keep a Notebook path after it is hidden, or
+  DSH: Manage Context Files to review pinned and session-authorized entries.
+- Notebook content, outputs, execution results, and custom metadata remain
+  private; only editor metadata and selection coordinates are shared.
+
+### Verification
+
+- 85 automated tests passed, including Notebook selection, dirty/save,
+  multi-root, close cleanup, v1/v2 parsing, and safety sanitization cases.
+- Real DSH patch-loading smoke test, build, VSIX resource inspection, and
+  UTF-8 encoding checks passed.
+
+## [0.1.8] - 2026-08-16
+
+### Added
+
+- A DSH shortcut in the editor's upper-right title area.
+- Native Secondary Sidebar placement on VS Code 1.106 and newer.
+- Automatic Activity Bar fallback on older supported VS Code versions.
+
+### Compatibility and reliability
+
+- The existing `dsh.openPanel` command ID is preserved for shortcuts and integrations.
+- Primary and secondary views are mutually exclusive and share one Webview provider, preventing duplicate DSH pages and processes.
+- Server controls, workspace synchronization, and editor context remain available in both sidebar placements.
+
+
 ## [0.1.7] - 2026-08-15
 
 ### Added

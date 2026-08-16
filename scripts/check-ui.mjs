@@ -35,6 +35,59 @@ if (encodingIssues.length > 0) {
   throw new Error(`检测到乱码：\n${encodingIssues.join("\n")}`);
 }
 
+const manifest = JSON.parse(fs.readFileSync("package.json", "utf8"));
+const compatibilityContext = "dsh.doesNotSupportSecondarySidebar";
+const primaryViewId = "dsh.sidebarView";
+const secondaryViewId = "dsh.sidebarSecondaryView";
+
+function requireContribution(condition, message) {
+  if (!condition) throw new Error(message);
+}
+
+const activityContainer = manifest.contributes?.viewsContainers?.activitybar?.find((item) => item.id === "dsh");
+const secondaryContainer = manifest.contributes?.viewsContainers?.secondarySidebar?.find((item) => item.id === "dshSecondary");
+requireContribution(
+  activityContainer?.when === compatibilityContext,
+  "The legacy DSH Activity Bar container must be limited to unsupported VS Code versions",
+);
+requireContribution(
+  secondaryContainer?.when === `!${compatibilityContext}`,
+  "The DSH Secondary Sidebar container must be enabled on supported VS Code versions",
+);
+
+const primaryView = manifest.contributes?.views?.dsh?.find((item) => item.id === primaryViewId);
+const secondaryView = manifest.contributes?.views?.dshSecondary?.find((item) => item.id === secondaryViewId);
+requireContribution(primaryView?.when === compatibilityContext, "The primary DSH view is missing its compatibility condition");
+requireContribution(secondaryView?.when === `!${compatibilityContext}`, "The secondary DSH view is missing its compatibility condition");
+
+const openCommand = manifest.contributes?.commands?.find((item) => item.command === "dsh.openPanel");
+requireContribution(
+  openCommand?.icon?.light === "media/dsh.svg" && openCommand?.icon?.dark === "media/dsh.svg",
+  "The DSH open command must use the DSH SVG icon",
+);
+requireContribution(
+  manifest.contributes?.menus?.["editor/title"]?.some((item) => item.command === "dsh.openPanel"),
+  "The DSH open command must be present in the editor title menu",
+);
+
+const requiredViewCommands = [
+  "dsh.startServer",
+  "dsh.restartServer",
+  "dsh.stopServer",
+  "dsh.openInBrowser",
+  "dsh.showLogs",
+];
+const viewTitleItems = manifest.contributes?.menus?.["view/title"] ?? [];
+for (const viewId of [primaryViewId, secondaryViewId]) {
+  for (const command of requiredViewCommands) {
+
+    requireContribution(
+      viewTitleItems.some((item) => item.command === command && item.when?.includes(`view == ${viewId}`)),
+      `${viewId} is missing the ${command} title command`,
+    );
+  }
+}
+
 const bundledSidebar = buildSync({
   entryPoints: ["src/sidebar.ts"],
   bundle: true,

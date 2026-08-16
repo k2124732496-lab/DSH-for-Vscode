@@ -1,14 +1,17 @@
 /** Adapts VS Code editor events and workspace persistence to the editor-context model. */
 import { basename } from "node:path";
 import * as vscode from "vscode";
+import { activeLocalResourceUri } from "./config";
 import { EditorContextBridge } from "./editor-context-bridge";
 import {
   EditorContextModel,
+  MAX_SELECTIONS_PER_EDITOR,
   MAX_PINNED_EDITOR_FILES,
   type EditorContextFile,
   type EditorContextSnapshot,
   type VisibleEditorFile,
 } from "./editor-context";
+import { NotebookContextAdapter } from "./notebook-context";
 
 const PINNED_STATE_KEY = "dsh.editorContext.pinnedFiles";
 const INCLUDE_EXTERNAL = "Include for this session";
@@ -48,11 +51,12 @@ export function toVisibleEditorFile(
 ): VisibleEditorFile | undefined {
   if (editor.document.uri.scheme !== "file") return undefined;
   return {
+    editorType: "text",
     path: editor.document.uri.fsPath,
     languageId: editor.document.languageId,
     dirty: editor.document.isDirty,
     active: editor === activeEditor,
-    selections: editor.selections.map((selection) => ({
+    selections: editor.selections.slice(0, MAX_SELECTIONS_PER_EDITOR).map((selection) => ({
       startLine: selection.start.line + 1,
       startColumn: selection.start.character + 1,
       endLine: selection.end.line + 1,
@@ -66,6 +70,7 @@ export class EditorContextController implements vscode.Disposable {
   readonly patchPath: string;
   private readonly model: EditorContextModel;
   private readonly bridge: EditorContextBridge;
+  private readonly notebookAdapter = new NotebookContextAdapter();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly promptingExternal = new Set<string>();
   private disposed = false;
@@ -105,13 +110,25 @@ export class EditorContextController implements vscode.Disposable {
     await controller.bridge.initialize();
     controller.disposables.push(
       vscode.window.onDidChangeActiveTextEditor(() => controller.refresh()),
+      vscode.window.onDidChangeActiveNotebookEditor(() => controller.refresh()),
     );
     if (options.editorContextEnabled) {
       controller.disposables.push(
         vscode.window.onDidChangeVisibleTextEditors(() => controller.refresh()),
-        vscode.window.onDidChangeTextEditorSelection(() => controller.refresh()),
+        vscode.window.onDidChangeVisibleNotebookEditors(() => controller.refresh()),
+        vscode.window.onDidChangeTextEditorSelection((event) => {
+          controller.notebookAdapter.recordTextEditorSelection(event.textEditor);
+          controller.refresh();
+        }),
+        vscode.window.onDidChangeNotebookEditorSelection(() => controller.refresh()),
         vscode.workspace.onDidChangeTextDocument(() => controller.refresh()),
         vscode.workspace.onDidSaveTextDocument(() => controller.refresh()),
+        vscode.workspace.onDidChangeNotebookDocument(() => controller.refresh()),
+        vscode.workspace.onDidSaveNotebookDocument(() => controller.refresh()),
+        vscode.workspace.onDidCloseNotebookDocument((notebook) => {
+          controller.notebookAdapter.forgetNotebook(notebook);
+          controller.refresh();
+        }),
       );
     }
     controller.refresh();
@@ -197,12 +214,26 @@ export class EditorContextController implements vscode.Disposable {
     if (this.disposed) return;
     const workspaceRoot = this.options.workspaceRoot();
     if (workspaceRoot !== undefined) this.model.setWorkspaceRoot(workspaceRoot);
-    const activeEditor = vscode.window.activeTextEditor;
+    const activeResource = activeLocalResourceUri();
+    const activeTextEditor = vscode.window.activeTextEditor?.document.uri.scheme === "file"
+      && vscode.window.activeTextEditor.document.uri.toString() === activeResource?.toString()
+      ? vscode.window.activeTextEditor
+      : undefined;
+    const activeNotebookEditor = vscode.window.activeNotebookEditor?.notebook.uri.toString() === activeResource?.toString()
+      ? vscode.window.activeNotebookEditor
+      : undefined;
     const visibleFiles: VisibleEditorFile[] = this.options.editorContextEnabled
-      ? vscode.window.visibleTextEditors.flatMap((editor) => {
-        const file = toVisibleEditorFile(editor, activeEditor);
-        return file === undefined ? [] : [file];
-      })
+      ? [
+        ...vscode.window.visibleTextEditors.flatMap((editor) => {
+          const file = toVisibleEditorFile(editor, activeTextEditor);
+          return file === undefined ? [] : [file];
+        }),
+        ...this.notebookAdapter.collect(
+          vscode.window.visibleNotebookEditors,
+          activeNotebookEditor,
+          vscode.window.activeTextEditor,
+        ),
+      ]
       : [];
     const pendingExternal = this.model.updateVisible(visibleFiles);
     this.bridge.scheduleWrite();
@@ -235,8 +266,7 @@ export class EditorContextController implements vscode.Disposable {
   }
 
   private activeLocalFile(): string | undefined {
-    const uri = vscode.window.activeTextEditor?.document.uri;
-    return uri?.scheme === "file" ? uri.fsPath : undefined;
+    return activeLocalResourceUri()?.fsPath;
   }
 
   private async persistPinnedPaths(): Promise<void> {
