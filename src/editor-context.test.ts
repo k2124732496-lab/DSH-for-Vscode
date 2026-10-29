@@ -129,6 +129,22 @@ describe("EditorContextModel", () => {
     assert.equal(model.snapshot(1_000, 45_000).files.length, 1);
   });
 
+  it("removes deleted pins and migrates pins when a path is renamed", () => {
+    const work = String.raw`C:\work`;
+    const deleted = String.raw`C:\work\deleted.ts`;
+    const oldChild = String.raw`C:\work\folder\kept.ts`;
+    const other = String.raw`C:\work\other.ts`;
+    const renamedChild = String.raw`C:\work\renamed\kept.ts`;
+    const model = new EditorContextModel(work, [deleted, oldChild, other], "win32");
+
+    assert.equal(model.removePinnedPathsAtOrBelow(deleted), true);
+    assert.equal(model.movePinnedPathsAtOrBelow(String.raw`C:\work\folder`, String.raw`C:\work\renamed`), true);
+    assert.deepEqual(model.pinnedPaths(), [other, renamedChild]);
+    const snapshotPaths = model.snapshot(1_000, 45_000).files.map((file) => file.path);
+    assert.equal(snapshotPaths.includes(deleted), false);
+    assert.equal(snapshotPaths.includes(oldChild), false);
+  });
+
   it("re-roots snapshots without losing pinned files", () => {
     const model = new EditorContextModel("C:\\first", ["C:\\second\\pinned.ts"], "win32");
     assert.equal(model.setWorkspaceRoot("C:\\second"), true);

@@ -1,6 +1,6 @@
 /** Verifies the exact self-contained DSH plugin shipped in the VSIX. */
 import assert from "node:assert/strict";
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { pathToFileURL } from "node:url";
@@ -118,13 +118,13 @@ describe("DSH editor context plugin", () => {
 
   it("registers a dynamic non-durable system-prompt section", async () => {
     const plugin = await loadPlugin();
-    let registered: { name: string; order: number; text: () => string } | undefined;
+    let registered: { name: string; order: number; interpolate: boolean; text: () => string } | undefined;
     plugin.apply({
       inject(dependencies: string[], callback: (ctx: unknown) => unknown): void {
-        assert.deepEqual(dependencies, ["systemPrompt"]);
+        if (!dependencies.includes("systemPrompt")) return;
         callback({
           systemPrompt: {
-            section(section: { name: string; order: number; text: () => string }): () => void {
+            section(section: NonNullable<typeof registered>): () => void {
               registered = section;
               return () => undefined;
             },
@@ -137,21 +137,61 @@ describe("DSH editor context plugin", () => {
     assert.deepEqual(plugin.inject, []);
     assert.equal(registered?.name, "integration:vscode-editor-context");
     assert.equal(registered?.order, 900);
+    assert.equal(registered?.interpolate, false);
     assert.equal(registered?.text(), "");
   });
 
-  it("adds the workspace client to a valid DSH boot graph without duplicating it", async () => {
+  it("declares the native DSH 0.2 client module and its package dependencies", async () => {
+    const manifest = JSON.parse(await readFile(join(process.cwd(), "dsh", "package.json"), "utf8"));
+    assert.equal(manifest.name, "dsh-vscode-integration");
+    assert.equal(manifest.exports["./client"], "./workspace-sync-client.js");
+    assert.equal(manifest.dsh.client.platform, "web");
+    assert.ok(manifest.dsh.client.inject.includes("@deepseek-ai/dsh-client-ui-workspace"));
+  });
+
+  it("publishes a structured bridge address and cleans up the state route", async () => {
     const plugin = await loadPlugin();
-    const html = '<html><head><script>window.__DSH_BOOT__ = {"rev":"old","entries":[]}</script></head></html>';
-    const entry = {
-      id: "integration:vscode-workspace-sync",
-      url: "/bridge/client.js?rev=abc",
-      rev: "abc",
-      inject: ["workspaces", "sessions"],
-    };
-    const injected = plugin.injectWorkspaceClient(html, entry);
-    assert.match(injected, /integration:vscode-workspace-sync/);
-    assert.equal(plugin.injectWorkspaceClient(injected, entry), injected);
-    assert.equal(plugin.injectWorkspaceClient("<html></html>", entry), "<html></html>");
+    const directory = await mkdtemp(join(tmpdir(), "dsh-vscode-state-test-"));
+    temporaryDirectories.push(directory);
+    const contextFile = join(directory, "context.json");
+    await writeFile(contextFile, JSON.stringify({ version: 2, expiresAt: Date.now() + 45_000, workspaceRoot: "C:/work", files: [] }));
+    for (const enabled of [false, true]) {
+      let collect: (table: unknown[]) => void = () => {};
+      const routes: any[] = [];
+      let cleaned = 0;
+      let dispose: () => void = () => {};
+      plugin.apply({
+        inject(dependencies: string[], callback: (ctx: unknown) => () => void) {
+          assert.deepEqual(dependencies, ["webServer"]);
+          dispose = callback({
+            logger: { warn(message: string) { assert.fail(message); } },
+            on(event: string, listener: typeof collect) {
+              assert.equal(event, "webserver/index-inject");
+              collect = listener;
+              return () => { cleaned += 1; };
+            },
+            webServer: { register(route: unknown) { routes.push(route); return () => { cleaned += 1; }; } },
+          });
+        },
+      }, { contextFile, routeToken: "random-token", workspaceSyncEnabled: enabled });
+      const table: any[] = [];
+      collect(table);
+      assert.deepEqual(table[0], {
+        kind: "global", name: "__DSH_VSCODE__",
+        value: { version: 1, enabled, statePath: "./__dsh_vscode/random-token/state.json" },
+      });
+      assert.equal(routes.length, enabled ? 1 : 0);
+      if (enabled) {
+        let status = 0;
+        let body = "";
+        routes[0].handler({ method: "GET" }, {
+          writeHead(code: number) { status = code; }, end(value: string) { body = value; },
+        });
+        assert.equal(status, 200);
+        assert.equal(JSON.parse(body).workspaceRoot, "C:/work");
+      }
+      dispose();
+      assert.equal(cleaned, enabled ? 2 : 1);
+    }
   });
 });

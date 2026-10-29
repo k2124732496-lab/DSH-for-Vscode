@@ -1,4 +1,5 @@
 /** Adapts VS Code editor events and workspace persistence to the editor-context model. */
+import { stat } from "node:fs/promises";
 import { basename } from "node:path";
 import * as vscode from "vscode";
 import { activeLocalResourceUri } from "./config";
@@ -15,6 +16,31 @@ import { NotebookContextAdapter } from "./notebook-context";
 
 const PINNED_STATE_KEY = "dsh.editorContext.pinnedFiles";
 const INCLUDE_EXTERNAL = "Include for this session";
+const PINNED_RECONCILE_INTERVAL_MS = 60_000;
+
+type PinnedPathStat = (filePath: string) => Promise<unknown>;
+
+function fileSystemErrorCode(error: unknown): string | undefined {
+  if (typeof error !== "object" || error === null || !("code" in error)) return undefined;
+  return typeof error.code === "string" ? error.code : undefined;
+}
+
+/** Returns only paths the file system definitively reports as absent. */
+export async function findMissingPinnedPaths(
+  pinnedPaths: readonly string[],
+  statPath: PinnedPathStat = stat,
+): Promise<string[]> {
+  const checks = await Promise.all(pinnedPaths.map(async (filePath) => {
+    try {
+      await statPath(filePath);
+      return undefined;
+    } catch (error) {
+      const code = fileSystemErrorCode(error);
+      return code === "ENOENT" || code === "ENOTDIR" ? filePath : undefined;
+    }
+  }));
+  return checks.filter((filePath): filePath is string => filePath !== undefined);
+}
 
 /** Removes all file metadata when only workspace synchronization is enabled. */
 export function integrationSnapshot(
@@ -37,7 +63,6 @@ export interface EditorContextControllerOptions {
   extensionContext: vscode.ExtensionContext;
   workspaceRoot(): string | undefined;
   pluginPath: string;
-  workspaceClientPath: string;
   editorContextEnabled: boolean;
   workspaceSyncEnabled: boolean;
   onDidChange(): void;
@@ -73,6 +98,8 @@ export class EditorContextController implements vscode.Disposable {
   private readonly notebookAdapter = new NotebookContextAdapter();
   private readonly disposables: vscode.Disposable[] = [];
   private readonly promptingExternal = new Set<string>();
+  private pinnedReconcileTimer: ReturnType<typeof setInterval> | undefined;
+  private pinnedUpdateQueue: Promise<void> = Promise.resolve();
   private disposed = false;
 
   private constructor(private readonly options: EditorContextControllerOptions) {
@@ -83,7 +110,6 @@ export class EditorContextController implements vscode.Disposable {
     this.bridge = new EditorContextBridge({
       storageDirectory: (options.extensionContext.storageUri ?? options.extensionContext.globalStorageUri).fsPath,
       pluginPath: options.pluginPath,
-      workspaceClientPath: options.workspaceClientPath,
       editorContextEnabled: options.editorContextEnabled,
       workspaceSyncEnabled: options.workspaceSyncEnabled,
       snapshot: (now, ttlMs) => integrationSnapshot(this.model.snapshot(now, ttlMs), options.editorContextEnabled),
@@ -107,10 +133,13 @@ export class EditorContextController implements vscode.Disposable {
 
   static async create(options: EditorContextControllerOptions): Promise<EditorContextController> {
     const controller = new EditorContextController(options);
+    if (options.editorContextEnabled) await controller.reconcilePinnedFiles();
     await controller.bridge.initialize();
     controller.disposables.push(
       vscode.window.onDidChangeActiveTextEditor(() => controller.refresh()),
       vscode.window.onDidChangeActiveNotebookEditor(() => controller.refresh()),
+      vscode.window.tabGroups.onDidChangeTabs(() => controller.refresh()),
+      vscode.window.tabGroups.onDidChangeTabGroups(() => controller.refresh()),
     );
     if (options.editorContextEnabled) {
       controller.disposables.push(
@@ -129,7 +158,17 @@ export class EditorContextController implements vscode.Disposable {
           controller.notebookAdapter.forgetNotebook(notebook);
           controller.refresh();
         }),
+        vscode.workspace.onDidDeleteFiles((event) => {
+          void controller.handleDeletedFiles(event.files);
+        }),
+        vscode.workspace.onDidRenameFiles((event) => {
+          void controller.handleRenamedFiles(event.files);
+        }),
       );
+      controller.pinnedReconcileTimer = setInterval(() => {
+        void controller.reconcilePinnedFiles();
+      }, PINNED_RECONCILE_INTERVAL_MS);
+      controller.pinnedReconcileTimer.unref?.();
     }
     controller.refresh();
     return controller;
@@ -206,8 +245,65 @@ export class EditorContextController implements vscode.Disposable {
   async dispose(): Promise<void> {
     if (this.disposed) return;
     this.disposed = true;
+    if (this.pinnedReconcileTimer !== undefined) clearInterval(this.pinnedReconcileTimer);
+    this.pinnedReconcileTimer = undefined;
     for (const disposable of this.disposables) disposable.dispose();
+    await this.pinnedUpdateQueue;
     await this.bridge.dispose();
+  }
+
+  private reconcilePinnedFiles(): Promise<void> {
+    return this.updatePinnedFiles(async () => {
+      const missingPaths = await findMissingPinnedPaths(this.model.pinnedPaths());
+      let changed = false;
+      for (const filePath of missingPaths) {
+        changed = this.model.removePinnedPathsAtOrBelow(filePath) || changed;
+      }
+      return changed;
+    });
+  }
+
+  private handleDeletedFiles(files: readonly vscode.Uri[]): Promise<void> {
+    return this.updatePinnedFiles(() => {
+      let changed = false;
+      for (const uri of files) {
+        if (uri.scheme !== "file") continue;
+        changed = this.model.removePinnedPathsAtOrBelow(uri.fsPath) || changed;
+      }
+      return changed;
+    });
+  }
+
+  private handleRenamedFiles(
+    files: ReadonlyArray<{ readonly oldUri: vscode.Uri; readonly newUri: vscode.Uri }>,
+  ): Promise<void> {
+    return this.updatePinnedFiles(() => {
+      let changed = false;
+      for (const { oldUri, newUri } of files) {
+        if (oldUri.scheme !== "file") continue;
+        changed = newUri.scheme === "file"
+          ? this.model.movePinnedPathsAtOrBelow(oldUri.fsPath, newUri.fsPath) || changed
+          : this.model.removePinnedPathsAtOrBelow(oldUri.fsPath) || changed;
+      }
+      return changed;
+    });
+  }
+
+  private updatePinnedFiles(update: () => boolean | Promise<boolean>): Promise<void> {
+    const operation = this.pinnedUpdateQueue.then(async () => {
+      if (this.disposed) return;
+      const changed = await update();
+      if (!changed || this.disposed) return;
+
+      // Persist only after a missing path or explicit file event confirms the change.
+      await this.persistPinnedPaths();
+      this.bridge.scheduleWrite();
+      this.options.onDidChange();
+    });
+    this.pinnedUpdateQueue = operation.catch((error) => {
+      this.options.log(`Could not reconcile pinned editor files: ${error instanceof Error ? error.message : String(error)}`);
+    });
+    return this.pinnedUpdateQueue;
   }
 
   private refresh(): void {

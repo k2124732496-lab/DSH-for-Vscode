@@ -1,3 +1,4 @@
+/** Hosts the embedded DSH page, lifecycle toolbar, and validated integration status messages. */
 import * as vscode from "vscode";
 import type { ServerSnapshot } from "./types";
 import type { EditorContextSummary } from "./editor-context-vscode";
@@ -67,11 +68,17 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     this.lastSnapshot = snapshot;
     const sequence = ++this.pushSequence;
     let url = snapshot.url;
+    let error = snapshot.error;
     if (url !== undefined && this.view !== undefined) {
-      try { url = await this.toWebviewUrl(url); } catch { url = undefined; }
+      try { url = await this.toWebviewUrl(url); }
+      catch (cause) {
+        url = undefined;
+        error = `Could not open the DSH sidebar: ${cause instanceof Error ? cause.message : String(cause)}`;
+      }
     }
     if (sequence !== this.pushSequence) return;
-    const message: WebviewInState = { type: "state", state: snapshot.state, url, error: snapshot.error };
+    const state = snapshot.state === "running" && url === undefined ? "crashed" : snapshot.state;
+    const message: WebviewInState = { type: "state", state, url, error };
     await this.view?.webview.postMessage(message);
   }
 
@@ -197,7 +204,7 @@ export class SidebarProvider implements vscode.WebviewViewProvider {
     function applyState(state, url, error) {
       currentState = state;
       dot.className = state;
-      label.textContent = state + (url ? " · " + url.replace(/^https?:\\/\\//, "") : "");
+      label.textContent = state + (url ? " · " + new URL(url).host : "");
       const running = state === "running" && !!url;
       if (running) {
         if (url !== lastUrl) {

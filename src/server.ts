@@ -40,7 +40,11 @@ export function parseWebUrl(line: string): ParsedWebUrl | undefined {
     const port = Number(parsed.port);
     if (parsed.protocol !== "http:" || (host !== "127.0.0.1" && host !== "localhost")) return undefined;
     if (!Number.isInteger(port) || port < 1 || port > 65_535) return undefined;
-    return { url: `http://${host}:${String(port)}`, port };
+    if (parsed.username !== "" || parsed.password !== "") return undefined;
+    // 新版启动地址包含鉴权令牌，加载 iframe 时必须保留查询参数。
+    const suffix = parsed.pathname === "/" && parsed.search === "" && parsed.hash === ""
+      ? "" : `${parsed.pathname}${parsed.search}${parsed.hash}`;
+    return { url: `http://${host}:${String(port)}${suffix}`, port };
   } catch { return undefined; }
 }
 
@@ -57,7 +61,11 @@ export function probeHealth(url: string, timeoutMs: number): Promise<boolean> {
     let settled = false;
     const done = (value: boolean) => { if (!settled) { settled = true; resolve(value); } };
     try {
-      const request = httpGet(url, (response) => { response.resume(); done(true); });
+      const request = httpGet(url, (response) => {
+        response.resume();
+        const status = response.statusCode ?? 500;
+        done(status >= 200 && status < 400);
+      });
       request.on("error", () => done(false));
       request.setTimeout(timeoutMs, () => { request.destroy(); done(false); });
     } catch { done(false); }
@@ -83,12 +91,14 @@ export function probeFixedPort(url: string, timeoutMs: number): Promise<FixedPor
           const isDsh = header.includes("dsh")
             || lowerBody.includes("deepseek harness")
             || lowerBody.includes("data-dsh-web")
-            || lowerBody.includes("window.__dsh_boot__");
+            || lowerBody.includes("__dsh_boot__");
           if (status >= 200 && status < 400 && isDsh) {
             done({ kind: "dsh" });
             return;
           }
-          const reason = status < 200 || status >= 400
+          const reason = status === 401 || status === 403
+            ? "The endpoint requires authentication; use an extension-managed DSH process instead of attaching without credentials."
+            : status < 200 || status >= 400
             ? `The endpoint returned HTTP ${String(status)}.`
             : "The HTTP endpoint did not identify itself as DSH.";
           done({ kind: "occupied", reason });
@@ -258,14 +268,15 @@ export class DshServer {
         return this.getSnapshot();
       }
       if (probeResult.kind === "occupied") {
-        this.crash(sequence, `Port ${String(settings.port)} is already in use, but the endpoint is not DSH. ${probeResult.reason} Stop that service, choose another dsh.port, or set dsh.port to 0.`);
+        this.crash(sequence, `Port ${String(settings.port)} is already in use and cannot be safely reused. ${probeResult.reason} Stop that service, choose another dsh.port, or set dsh.port to 0.`);
         return this.getSnapshot();
       }
     }
     let location: DshLocation; try { location = await this.options.resolveLocation(); } catch (error) { this.crash(sequence, describeError(error)); return this.getSnapshot(); }
     if (!this.current(sequence)) return this.getSnapshot();
     const patchArgs = settings.editorContextPatchPath === undefined ? [] : ["--patch", settings.editorContextPatchPath];
-    const args = ["--profile", "web", ...patchArgs, "--host", settings.host, "--port", String(settings.port), ...settings.extraArgs];
+    const host = settings.host === "localhost" ? "127.0.0.1" : settings.host;
+    const args = ["--profile", "web", ...patchArgs, "--host", host, "--port", String(settings.port), ...settings.extraArgs, "--no-open"];
     const spec = buildSpawn(location, args, this.options.platform ?? process.platform, this.options.nodeBin ?? defaultNodeBin());
     const env: Record<string, string | undefined> = { ...scrubExtensionHostEnv((this.options.parentEnv ?? (() => process.env))()) };
     if (settings.dshHome !== "") env.DSH_HOME = settings.dshHome; Object.assign(env, settings.extraEnv);
@@ -292,7 +303,7 @@ export class DshServer {
       if (alive) { this.setState("running", { url: parsed.url, port: parsed.port, owned: true, pid: launch.child.pid, error: undefined }); return; }
       await delay(this.interval());
     }
-    if (this.currentLaunch(launch) && this.snapshot.state === "starting") await this.fail(launch, `dsh printed ${parsed.url} but never answered health probes`);
+    if (this.currentLaunch(launch) && this.snapshot.state === "starting") await this.fail(launch, `dsh printed ${redact(parsed.url)} but never answered health probes`);
   }
   private async fail(launch: Launch, reason: string): Promise<void> {
     if (!this.currentLaunch(launch)) return;

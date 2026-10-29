@@ -13,9 +13,11 @@ import {
   SIDEBAR_COMPATIBILITY_CONTEXT,
 } from "./sidebar-placement";
 import { StatusBar } from "./status";
+import { DshFrameProxy } from "./frame-proxy";
 
 let activeServer: DshServer | undefined;
 let activeEditorContext: EditorContextController | undefined;
+let activeFrameProxy: DshFrameProxy | undefined;
 
 function canStartDsh(showMessage: boolean): boolean {
   if (!vscode.workspace.isTrusted) {
@@ -39,6 +41,8 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   );
   let editorContext: EditorContextController | undefined;
   let sidebar: SidebarProvider | undefined;
+  const frameProxy = new DshFrameProxy();
+  activeFrameProxy = frameProxy;
   const server = new DshServer({
     resolveLocation: async () => discoverDsh(readSettings().executablePath, realDiscoveryEnv()),
     settings: () => {
@@ -121,7 +125,6 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
         extensionContext: context,
         workspaceRoot: workspaceCwd,
         pluginPath: context.asAbsolutePath("dsh/editor-context-plugin.mjs"),
-        workspaceClientPath: context.asAbsolutePath("dsh/workspace-sync-client.js"),
         editorContextEnabled: settings.editorContextEnabled,
         workspaceSyncEnabled: settings.workspaceSyncEnabled,
         onDidChange: () => {
@@ -185,13 +188,17 @@ export async function activate(context: vscode.ExtensionContext): Promise<void> 
   };
 
   const unsubscribe = server.onChange((snapshot) => {
+    if (snapshot.state !== "running") void frameProxy.dispose();
     statusBar.update(snapshot);
     void vscode.commands.executeCommand("setContext", "dsh.running", snapshot.state === "running");
     void sidebar?.push(snapshot);
     pushEditorContext();
     pushWorkspaceSync();
   });
-  sidebar = new SidebarProvider(handleWebviewCommand, async (url) => (await vscode.env.asExternalUri(vscode.Uri.parse(url))).toString(true));
+  sidebar = new SidebarProvider(handleWebviewCommand, async (url) => {
+    const frameUrl = await frameProxy.open(url);
+    return (await vscode.env.asExternalUri(vscode.Uri.parse(frameUrl))).toString(true);
+  });
 
   context.subscriptions.push(
     statusBar,
@@ -247,8 +254,11 @@ export async function deactivate(): Promise<void> {
   log("DSH for VS Code deactivating");
   const server = activeServer;
   const editorContext = activeEditorContext;
+  const frameProxy = activeFrameProxy;
   activeServer = undefined;
   activeEditorContext = undefined;
+  activeFrameProxy = undefined;
+  await frameProxy?.dispose();
   if (server === undefined) { await editorContext?.dispose(); return; }
   let stopOnDeactivate = true;
   try { stopOnDeactivate = readSettings().stopOnDeactivate; } catch {}

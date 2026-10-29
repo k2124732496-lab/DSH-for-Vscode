@@ -1,3 +1,4 @@
+/** Verifies DSH launch URLs, HTTP probes, process ownership, and lifecycle behavior. */
 import assert from "node:assert/strict";
 import { createServer, type Server as HttpServer } from "node:http";
 import { describe, it } from "node:test";
@@ -33,6 +34,12 @@ describe("parseWebUrl", () => {
     assert.equal(parseWebUrl("dsh web: http://192.168.1.5:3080"), undefined);
     assert.equal(parseWebUrl(""), undefined);
   });
+
+  it("preserves the DSH 0.2 launch token and rejects credential-bearing URLs", () => {
+    assert.equal(parseWebUrl("dsh web: http://127.0.0.1:3080/?token=example-token")?.url,
+      "http://127.0.0.1:3080/?token=example-token");
+    assert.equal(parseWebUrl("dsh web: http://name:password@127.0.0.1:3080/"), undefined);
+  });
 });
 
 describe("probeHealth", () => {
@@ -53,6 +60,17 @@ describe("probeHealth", () => {
   it("rejects a dead port quickly", async () => {
     // Port 1 is reserved and never serves HTTP on loopback in practice.
     assert.equal(await probeHealth("http://127.0.0.1:1/", 1000), false);
+  });
+
+  it("accepts authentication redirects but rejects HTTP error responses", async () => {
+    for (const status of [303, 401, 500]) {
+      const server = createServer((_request, response) => { response.writeHead(status); response.end(); });
+      await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+      try {
+        const { port } = server.address() as AddressInfo;
+        assert.equal(await probeHealth(`http://127.0.0.1:${port}/`, 1000), status === 303);
+      } finally { await new Promise<void>((resolve) => server.close(() => resolve())); }
+    }
   });
 });
 
@@ -288,6 +306,7 @@ describe("DshServer lifecycle", () => {
       "127.0.0.1",
       "--port",
       "0",
+      "--no-open",
     ]);
   });
 
@@ -314,6 +333,7 @@ describe("DshServer lifecycle", () => {
       "--host", "127.0.0.1",
       "--port", "0",
       "--trusted-host", "example.test",
+      "--no-open",
     ]);
   });
 
@@ -374,7 +394,7 @@ describe("DshServer lifecycle", () => {
     });
     const snapshot = await harness.server.start();
     assert.equal(snapshot.state, "crashed");
-    assert.match(snapshot.error ?? "", /port 3080.*already in use.*not DSH/i);
+    assert.match(snapshot.error ?? "", /port 3080.*already in use.*cannot be safely reused/i);
     assert.equal(harness.spawns.length, 0);
   });
 

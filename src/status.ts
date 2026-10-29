@@ -1,3 +1,4 @@
+/** Shows DSH lifecycle status without exposing the process authentication token. */
 import * as vscode from "vscode";
 import type { ServerSnapshot } from "./types";
 
@@ -16,8 +17,8 @@ export class StatusBar {
       case "running":
         this.item.text = `$(comment-discussion) DSH:${snapshot.port !== undefined ? String(snapshot.port) : "?"}`;
         this.item.tooltip = snapshot.owned
-          ? `DSH running at ${snapshot.url ?? ""} (managed by this extension)`
-          : `DSH running at ${snapshot.url ?? ""} (reused existing instance)`;
+          ? `DSH running at ${snapshot.url?.split("?")[0] ?? ""} (managed by this extension)`
+          : `DSH running at ${snapshot.url?.split("?")[0] ?? ""} (reused existing instance)`;
         this.item.backgroundColor = undefined;
         break;
       case "starting":

@@ -1,17 +1,14 @@
 /** Bridges short-lived VS Code metadata into DSH prompts and the Web client. */
-import { createHash } from "node:crypto";
 import { readFileSync, statSync } from "node:fs";
 
 export const name = "vscode-integration";
 export const inject = [];
 
 const MAX_CONTEXT_BYTES = 1024 * 1024;
-const MAX_CLIENT_BYTES = 1024 * 1024;
 const MAX_CONTEXT_FILES = 256;
 const MAX_SELECTIONS_PER_FILE = 64;
 const MAX_NOTEBOOK_CELLS = 100;
 const MAX_IDENTIFIER_LENGTH = 256;
-const CLIENT_MODULE_ID = "integration:vscode-workspace-sync";
 
 function isPositiveSafeInteger(value) {
   return Number.isSafeInteger(value) && value >= 1;
@@ -200,30 +197,6 @@ export function readEditorContextSection(contextFile, now = Date.now()) {
   return snapshot === undefined ? "" : renderEditorContextSnapshot(snapshot, now);
 }
 
-/** Adds the bundled client entry after DSH has injected its boot graph. */
-export function injectWorkspaceClient(html, entry) {
-  try {
-    const marker = "<script>window.__DSH_BOOT__ = ";
-    const start = html.indexOf(marker);
-    if (start === -1) return html;
-    const jsonStart = start + marker.length;
-    const end = html.indexOf("</script>", jsonStart);
-    if (end === -1) return html;
-    const graph = JSON.parse(html.slice(jsonStart, end));
-    if (graph === null || typeof graph !== "object" || !Array.isArray(graph.entries)) return html;
-    if (graph.entries.some((candidate) => candidate?.id === entry.id)) return html;
-    const entries = [...graph.entries, entry];
-    const nextGraph = {
-      ...graph,
-      rev: createHash("sha1").update(JSON.stringify(entries)).digest("hex").slice(0, 12),
-      entries,
-    };
-    return `${html.slice(0, jsonStart)}${safeJson(nextGraph)}${html.slice(end)}`;
-  } catch {
-    return html;
-  }
-}
-
 function sendJson(res, status, value, headOnly) {
   const body = value === undefined ? "" : `${JSON.stringify(value)}\n`;
   res.writeHead(status, {
@@ -236,42 +209,31 @@ function sendJson(res, status, value, headOnly) {
 
 function mountWorkspaceSync(ctx, config) {
   const contextFile = typeof config.contextFile === "string" ? config.contextFile : "";
-  const clientFile = typeof config.workspaceClientFile === "string" ? config.workspaceClientFile : "";
   const routeToken = typeof config.routeToken === "string" && /^[A-Za-z0-9_-]{1,128}$/.test(config.routeToken)
     ? config.routeToken
     : "";
-  if (contextFile === "" || clientFile === "" || routeToken === "") {
+  if (contextFile === "" || routeToken === "") {
     ctx.logger.warn("vscode workspace sync: invalid bridge configuration");
     return;
   }
 
+  const disposers = [];
   try {
-    if (statSync(clientFile).size > MAX_CLIENT_BYTES) throw new Error("client bundle is too large");
-    const clientBody = readFileSync(clientFile, "utf8");
-    const rev = createHash("sha1").update(clientBody).digest("hex").slice(0, 12);
     const routePrefix = `/__dsh_vscode/${routeToken}`;
-    const entry = {
-      id: CLIENT_MODULE_ID,
-      url: `${routePrefix}/client.js?rev=${rev}`,
-      rev,
-      inject: ["workspaces", "sessions"],
-      immediately: true,
-    };
-    const disposers = [
-      ctx.webServer.register({
-        kind: "exact",
-        path: `${routePrefix}/client.js`,
-        handler(req, res) {
-          if (req.method !== "GET" && req.method !== "HEAD") return sendJson(res, 405, undefined, true);
-          res.writeHead(200, {
-            "content-type": "text/javascript; charset=utf-8",
-            "cache-control": "no-cache",
-            "x-content-type-options": "nosniff",
-          });
-          res.end(req.method === "HEAD" ? undefined : clientBody);
+    // 由官方客户端模块系统管理批次和热更新；这里只发布桥接状态地址。
+    disposers.push(ctx.on("webserver/index-inject", (table) => {
+      table.push({
+        kind: "global",
+        name: "__DSH_VSCODE__",
+        value: {
+          version: 1,
+          enabled: config.workspaceSyncEnabled === true,
+          statePath: `.${routePrefix}/state.json`,
         },
-      }),
-      ctx.webServer.register({
+      });
+    }));
+    if (config.workspaceSyncEnabled === true) {
+      disposers.push(ctx.webServer.register({
         kind: "exact",
         path: `${routePrefix}/state.json`,
         handler(req, res) {
@@ -284,13 +246,13 @@ function mountWorkspaceSync(ctx, config) {
             workspaceRoot: snapshot.workspaceRoot,
           }, req.method === "HEAD");
         },
-      }),
-      ctx.webServer.tapIndex((html) => injectWorkspaceClient(html, entry)),
-    ];
+      }));
+    }
     return () => {
       for (const dispose of disposers.reverse()) dispose();
     };
   } catch (error) {
+    for (const dispose of disposers.reverse()) dispose();
     ctx.logger.warn(`vscode workspace sync unavailable: ${error instanceof Error ? error.message : String(error)}`);
   }
 }
@@ -301,10 +263,9 @@ export function apply(ctx, config = {}) {
     ctx.inject(["systemPrompt"], (promptCtx) => promptCtx.systemPrompt.section({
       name: "integration:vscode-editor-context",
       order: 900,
+      interpolate: false,
       text: () => readEditorContextSection(contextFile),
     }));
   }
-  if (config.workspaceSyncEnabled === true) {
-    ctx.inject(["webServer", "clientModules"], (webCtx) => mountWorkspaceSync(webCtx, config));
-  }
+  ctx.inject(["webServer"], (webCtx) => mountWorkspaceSync(webCtx, config));
 }

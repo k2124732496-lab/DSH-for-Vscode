@@ -12,7 +12,6 @@ describe("EditorContextBridge", () => {
     const bridge = new EditorContextBridge({
       storageDirectory,
       pluginPath: join(process.cwd(), "dsh", "editor-context-plugin.mjs"),
-      workspaceClientPath: join(process.cwd(), "dsh", "workspace-sync-client.js"),
       editorContextEnabled: true,
       workspaceSyncEnabled: true,
       activationId: "test-activation",
@@ -43,7 +42,6 @@ describe("EditorContextBridge", () => {
     const patchText = await readFile(bridge.patchPath, "utf8");
     assert.match(patchText, /id: vscode-integration/);
     assert.match(patchText, /editor-context-plugin\.mjs/);
-    assert.match(patchText, /workspace-sync-client\.js/);
     assert.match(patchText, /workspaceSyncEnabled: true/);
     assert.match(patchText, /editorContextEnabled: true/);
     assert.match(patchText, /contextFile/);

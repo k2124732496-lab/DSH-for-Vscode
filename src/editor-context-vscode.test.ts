@@ -2,7 +2,7 @@
 import assert from "node:assert/strict";
 import { describe, it } from "node:test";
 import type * as vscode from "vscode";
-import { integrationSnapshot, toVisibleEditorFile } from "./editor-context-vscode";
+import { findMissingPinnedPaths, integrationSnapshot, toVisibleEditorFile } from "./editor-context-vscode";
 
 function editor(scheme: string): vscode.TextEditor {
   return {
@@ -58,5 +58,19 @@ describe("integrationSnapshot", () => {
     assert.equal(snapshot.workspaceRoot, "C:\\OLED");
     assert.deepEqual(snapshot.files, []);
     assert.doesNotMatch(JSON.stringify(snapshot), /secret\.c/);
+  });
+});
+
+describe("findMissingPinnedPaths", () => {
+  it("removes only paths that are definitely missing", async () => {
+    const missing = await findMissingPinnedPaths(
+      ["C:/work/exists.ts", "C:/work/missing.ts", "C:/work/blocked.ts"],
+      async (filePath) => {
+        if (filePath.endsWith("missing.ts")) throw Object.assign(new Error("missing"), { code: "ENOENT" });
+        if (filePath.endsWith("blocked.ts")) throw Object.assign(new Error("blocked"), { code: "EACCES" });
+      },
+    );
+
+    assert.deepEqual(missing, ["C:/work/missing.ts"]);
   });
 });

@@ -1,22 +1,23 @@
 /** Selects the DSH session whose cwd matches the active VS Code workspace. */
 window.__ModuleLoader__.load({
-  id: "integration:vscode-workspace-sync",
+  id: "dsh-vscode-integration",
   factory: () => {
     const module = { exports: {} };
     const exports = module.exports;
     Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 
-    const MODULE_ID = "integration:vscode-workspace-sync";
     const MESSAGE_SOURCE = "dsh-vscode-workspace-sync";
     const POLL_INTERVAL_MS = 1_000;
     const ERROR_RETRY_MS = 5_000;
 
     function stateEndpoint() {
-      const entries = globalThis.__DSH_BOOT__?.entries;
-      const entry = Array.isArray(entries) ? entries.find((candidate) => candidate?.id === MODULE_ID) : undefined;
-      if (typeof entry?.url !== "string") throw new Error("workspace sync boot entry is missing");
-      const clientUrl = new URL(entry.url, globalThis.location.href);
-      return clientUrl.pathname.replace(/\/client\.js$/, "/state.json");
+      const integration = globalThis.__DSH_VSCODE__;
+      if (integration?.version !== 1 || typeof integration.statePath !== "string") {
+        throw new Error("VS Code integration state is missing or incompatible");
+      }
+      const endpoint = new URL(integration.statePath, globalThis.location.href);
+      if (endpoint.origin !== globalThis.location.origin) throw new Error("workspace bridge must be same-origin");
+      return endpoint.href;
     }
 
     function canonicalPath(value) {
@@ -43,7 +44,9 @@ window.__ModuleLoader__.load({
     }
 
     async function readDesiredWorkspace() {
-      const response = await fetch(stateEndpoint(), { cache: "no-store", credentials: "same-origin" });
+      const response = await fetch(stateEndpoint(), {
+        cache: "no-store", credentials: "same-origin", signal: AbortSignal.timeout(5_000),
+      });
       if (response.status === 204) return undefined;
       if (!response.ok) throw new Error(`workspace bridge returned HTTP ${String(response.status)}`);
       const value = await response.json();
@@ -57,11 +60,13 @@ window.__ModuleLoader__.load({
     function currentWorkspaceMatches(sessions, workspaceRoot) {
       const snapshot = sessions.list.getSnapshot();
       if (snapshot.phase !== "ready") return undefined;
-      const current = snapshot.current === undefined ? undefined : snapshot.byId[snapshot.current];
+      // 新版 Session Controller 用 mainView 引用标记当前界面会话。
+      const current = Object.values(snapshot.byId).find((session) => session.retainedBy?.mainView > 0);
       return current !== undefined && canonicalPath(current.cwd) === canonicalPath(workspaceRoot);
     }
 
     function apply(ctx) {
+      if (globalThis.__DSH_VSCODE__?.enabled !== true) return () => {};
       let disposed = false;
       let running = false;
       let rerun = false;
@@ -76,7 +81,7 @@ window.__ModuleLoader__.load({
       };
 
       const synchronize = async () => {
-        if (disposed || globalThis.document.visibilityState === "hidden") return;
+        if (disposed || globalThis.document.visibilityState === "hidden" || Date.now() < retryAfter) return;
         const workspaceRoot = await readDesiredWorkspace();
         if (workspaceRoot === undefined) {
           report("unavailable");
@@ -84,7 +89,7 @@ window.__ModuleLoader__.load({
         }
         const workspaceList = ctx.workspaces.list.getSnapshot();
         const matches = currentWorkspaceMatches(ctx.sessions, workspaceRoot);
-        if (!workspaceList.baselinesReady || matches === undefined) {
+        if (workspaceList.phase !== "ready" || matches === undefined) {
           report("syncing", workspaceRoot);
           return;
         }
@@ -93,11 +98,12 @@ window.__ModuleLoader__.load({
           report("synced", workspaceRoot);
           return;
         }
-        if (Date.now() < retryAfter) return;
-
         report("syncing", workspaceRoot);
-        const workspace = await ctx.workspaces.create({ path: workspaceRoot });
-        const sessionId = await ctx.workspaces.connectWorkspace(workspace.id);
+        const workspace = workspaceList.items.find((item) => canonicalPath(item.path) === canonicalPath(workspaceRoot))
+          ?? await ctx.workspaces.create({ path: workspaceRoot });
+        if (disposed) return;
+        if (typeof workspace?.workspaceId !== "string") throw new Error("DSH returned an invalid workspace identity");
+        const sessionId = await ctx.uiWorkspace.connectWorkspace(workspace.workspaceId);
 
         // The active file may have moved to another root while DSH was creating the session.
         const latestRoot = await readDesiredWorkspace();
@@ -105,9 +111,11 @@ window.__ModuleLoader__.load({
           rerun = true;
           return;
         }
-        ctx.sessions.open(sessionId);
+        if (typeof sessionId !== "string" || sessionId === "") throw new Error("DSH returned an invalid session identity");
+        // 使用 UI 导航接口完成会话引用和界面选择，避免只创建而没有切换。
+        ctx.uiWorkspace.openSession(sessionId);
         retryAfter = 0;
-        report("synced", workspaceRoot);
+        report(currentWorkspaceMatches(ctx.sessions, workspaceRoot) ? "synced" : "syncing", workspaceRoot);
       };
 
       const schedule = () => {
@@ -149,7 +157,7 @@ window.__ModuleLoader__.load({
     }
 
     exports.apply = apply;
-    exports.inject = ["workspaces", "sessions"];
+    exports.inject = ["workspaces", "sessions", "uiWorkspace"];
     return module.exports;
   },
 });

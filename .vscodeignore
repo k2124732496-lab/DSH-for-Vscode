@@ -11,6 +11,8 @@ esbuild.mjs
 tsconfig.json
 .smoke-out.log
 .smoke-dsh/**
+.smoke-dsh-*/**
+.tmp-dsh-compat-*/**
 vsce-out.txt
 *.log
 *.vsix

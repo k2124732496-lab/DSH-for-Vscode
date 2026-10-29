@@ -149,6 +149,43 @@ export class EditorContextModel {
     return this.pinned.delete(this.pathKey(filePath));
   }
 
+  removePinnedPathsAtOrBelow(filePath: string): boolean {
+    const rootPath = this.pathApi.resolve(filePath);
+    let changed = false;
+    for (const [key, pinnedPath] of [...this.pinned.entries()]) {
+      if (!this.isPathAtOrBelow(rootPath, pinnedPath)) continue;
+      this.pinned.delete(key);
+      this.allowedExternal.delete(key);
+      this.deniedExternal.delete(key);
+      changed = true;
+    }
+    return changed;
+  }
+
+  movePinnedPathsAtOrBelow(oldPath: string, newPath: string): boolean {
+    const oldRoot = this.pathApi.resolve(oldPath);
+    const newRoot = this.pathApi.resolve(newPath);
+    const moves = [...this.pinned.entries()].flatMap(([key, pinnedPath]) => {
+      if (!this.isPathAtOrBelow(oldRoot, pinnedPath)) return [];
+      const relativePath = this.pathApi.relative(oldRoot, pinnedPath);
+      const destination = relativePath === "" ? newRoot : this.pathApi.resolve(newRoot, relativePath);
+      return [{ key, destination }];
+    });
+    if (moves.length === 0) return false;
+
+    // When VS Code renames a directory, migrate pinned descendants to the new path.
+    for (const { key } of moves) {
+      this.pinned.delete(key);
+      this.allowedExternal.delete(key);
+      this.deniedExternal.delete(key);
+    }
+    for (const { destination } of moves) {
+      const destinationKey = this.pathKey(destination);
+      if (!this.pinned.has(destinationKey)) this.pinned.set(destinationKey, destination);
+    }
+    return true;
+  }
+
   pinnedPaths(): string[] {
     return [...this.pinned.values()];
   }
@@ -275,7 +312,11 @@ export class EditorContextModel {
   }
 
   private isInsideWorkspace(filePath: string): boolean {
-    const relativePath = this.pathApi.relative(this.normalizedRoot, this.pathApi.resolve(filePath));
+    return this.isPathAtOrBelow(this.normalizedRoot, filePath);
+  }
+
+  private isPathAtOrBelow(rootPath: string, candidatePath: string): boolean {
+    const relativePath = this.pathApi.relative(this.pathApi.resolve(rootPath), this.pathApi.resolve(candidatePath));
     return relativePath === ""
       || (relativePath !== ".." && !relativePath.startsWith(`..${this.pathApi.sep}`) && !this.pathApi.isAbsolute(relativePath));
   }

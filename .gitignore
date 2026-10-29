@@ -8,3 +8,5 @@ dist-smoke/
 .DS_Store
 .smoke-out.log
 .smoke-dsh/
+.smoke-dsh-*/
+.tmp-dsh-compat-*/

@@ -12,7 +12,6 @@ export const EDITOR_CONTEXT_DEBOUNCE_MS = 100;
 export interface EditorContextBridgeOptions {
   storageDirectory: string;
   pluginPath: string;
-  workspaceClientPath: string;
   editorContextEnabled: boolean;
   workspaceSyncEnabled: boolean;
   snapshot(now: number, ttlMs: number): EditorContextSnapshot;
@@ -99,7 +98,6 @@ export class EditorContextBridge {
       `      name: ${JSON.stringify(pluginUrl)}`,
       "      config:",
       `        contextFile: ${JSON.stringify(this.contextPath)}`,
-      `        workspaceClientFile: ${JSON.stringify(this.options.workspaceClientPath)}`,
       `        routeToken: ${JSON.stringify(this.routeToken)}`,
       `        editorContextEnabled: ${String(this.options.editorContextEnabled)}`,
       `        workspaceSyncEnabled: ${String(this.options.workspaceSyncEnabled)}`,

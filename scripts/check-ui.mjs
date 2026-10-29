@@ -6,7 +6,8 @@ import vm from "node:vm";
 import { buildSync } from "esbuild";
 
 const textFilePattern = /\.(?:ts|js|mjs|json|md|svg|css|html|yml|yaml|txt)$/i;
-const allowedNonAscii = new Set(["—", "→", "…", "⇄", "▶", "↻", "■", "↗", "·"]);
+// 检查实际解码错误，允许合法中文说明和注释。
+const mojibakePattern = /\uFFFD|\u951f\u65a4\u62f7|\u00ef\u00bf\u00bd|[\u00c2\u00c3][\u0080-\u00bf]/u;
 const files = execFileSync("git", ["ls-files", "-co", "--exclude-standard"], {
   encoding: "utf8",
 })
@@ -26,7 +27,7 @@ for (const file of files) {
     continue;
   }
   text.split(/\r?\n/).forEach((line, index) => {
-    if ([...line].some((character) => character.codePointAt(0) > 127 && !allowedNonAscii.has(character))) {
+    if (mojibakePattern.test(line)) {
       encodingIssues.push(`${file}:${index + 1}: ${line.trim()}`);
     }
   });
